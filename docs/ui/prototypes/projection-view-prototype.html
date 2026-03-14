@@ -1,0 +1,602 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ProjectionView Prototype (Soft UI Evolution)</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --primary: #2563eb;
+        --secondary: #3b82f6;
+        --cta: #f97316;
+        --bg: #f8fafc;
+        --surface: #ffffff;
+        --text: #1e293b;
+        --muted: #64748b;
+        --safe: #0f766e;
+        --warn: #dc2626;
+        --line: #e2e8f0;
+        --line-strong: #cbd5e1;
+        --radius-xl: 16px;
+        --radius-lg: 12px;
+        --radius-sm: 10px;
+        --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.05);
+        --shadow-2: 0 8px 24px rgba(37, 99, 235, 0.08);
+        --duration: 220ms;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: var(--text);
+        font-family: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+        background:
+          radial-gradient(1200px 500px at 10% -20%, rgba(59, 130, 246, 0.12), transparent 70%),
+          radial-gradient(1000px 600px at 100% -40%, rgba(249, 115, 22, 0.1), transparent 70%),
+          var(--bg);
+      }
+
+      .page {
+        max-width: 1040px;
+        margin: 0 auto;
+        padding: 18px;
+        display: grid;
+        gap: 14px;
+      }
+
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        box-shadow: var(--shadow-1), var(--shadow-2);
+        padding: 14px;
+      }
+
+      .status-wrap {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .status-main {
+        margin: 0;
+        font-size: clamp(24px, 4.2vw, 38px);
+        font-weight: 800;
+        line-height: 1.05;
+        letter-spacing: -0.01em;
+      }
+
+      .status-main.safe {
+        color: var(--safe);
+      }
+
+      .status-main.warn {
+        color: var(--warn);
+      }
+
+      .status-sub {
+        margin: 2px 0 0;
+        color: var(--muted);
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--line-strong);
+        border-radius: 999px;
+        padding: 8px 12px;
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--text);
+        background: #f8fbff;
+      }
+
+      .btn {
+        border: 1px solid var(--line-strong);
+        background: #ffffff;
+        color: var(--text);
+        border-radius: 999px;
+        padding: 10px 14px;
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+        min-height: 44px;
+        transition:
+          transform var(--duration) ease,
+          border-color var(--duration) ease,
+          background-color var(--duration) ease;
+      }
+
+      .btn:hover,
+      .btn:focus-visible {
+        border-color: var(--secondary);
+        background: #f5f9ff;
+        transform: translateY(-1px);
+        outline: none;
+      }
+
+      .btn.warn {
+        border-color: #fecaca;
+        color: var(--warn);
+        background: #fff7f7;
+      }
+
+      .chart-title {
+        margin: 0;
+        font-size: 19px;
+        font-weight: 800;
+      }
+
+      .chart-meta {
+        margin: 6px 0 10px;
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .chart-wrap {
+        background: #fbfdff;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        padding: 10px;
+      }
+
+      .chart {
+        width: 100%;
+        height: auto;
+        display: block;
+        border-radius: var(--radius-sm);
+        background: #ffffff;
+      }
+
+      .grid {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: 1fr;
+      }
+
+      @media (min-width: 900px) {
+        .grid {
+          grid-template-columns: 1.1fr 1fr;
+        }
+      }
+
+      .day-status {
+        margin: 0 0 10px;
+        font-size: 14px;
+        font-weight: 800;
+      }
+
+      .day-status.warn {
+        color: var(--warn);
+      }
+
+      .totals {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+
+      .total-btn {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        background: #ffffff;
+        padding: 12px;
+        text-align: left;
+        cursor: pointer;
+        min-height: 64px;
+        transition:
+          transform var(--duration) ease,
+          border-color var(--duration) ease,
+          background-color var(--duration) ease;
+      }
+
+      .total-btn:hover,
+      .total-btn:focus-visible {
+        border-color: var(--secondary);
+        transform: translateY(-1px);
+        outline: none;
+      }
+
+      .total-btn.active {
+        border-color: #93c5fd;
+        background: #eff6ff;
+      }
+
+      .total-label {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .total-value {
+        display: block;
+        margin-top: 4px;
+        font-size: 20px;
+        font-weight: 800;
+        letter-spacing: -0.01em;
+      }
+
+      .total-value.income {
+        color: #15803d;
+      }
+
+      .total-value.spend {
+        color: #b91c1c;
+      }
+
+      .details-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .details-title {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 800;
+      }
+
+      .details-list {
+        margin: 10px 0 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 8px;
+      }
+
+      .detail-item {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        padding: 10px;
+        background: #ffffff;
+      }
+
+      .detail-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .detail-label {
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .detail-amount {
+        font-size: 14px;
+        font-weight: 800;
+      }
+
+      .detail-note {
+        margin-top: 3px;
+        font-size: 12px;
+        color: var(--muted);
+        font-weight: 600;
+      }
+
+      @media (max-width: 520px) {
+        .totals {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="card">
+        <div class="status-wrap">
+          <div>
+            <h1 id="statusMain" class="status-main">SAFE FOR NOW</h1>
+            <p id="statusSub" class="status-sub">No zero-cross in forecast range.</p>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <span id="trendChip" class="badge">Trend: -</span>
+            <button id="jumpRiskBtn" class="btn warn" type="button">Jump to risk point</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="chart-title">Resource Trend</h2>
+        <p class="chart-meta">Tap a point to view that day’s earned/spent breakdown.</p>
+        <div class="chart-wrap">
+          <svg id="chart" class="chart" viewBox="0 0 920 300" role="img" aria-label="resource trend line"></svg>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <p id="dayStatus" class="day-status">Select a point on chart.</p>
+          <div class="totals">
+            <button id="incomeBtn" class="total-btn" type="button">
+              <span class="total-label">Earned</span>
+              <span id="incomeValue" class="total-value income">+¥0</span>
+            </button>
+            <button id="spendBtn" class="total-btn active" type="button">
+              <span class="total-label">Spent</span>
+              <span id="spendValue" class="total-value spend">-¥0</span>
+            </button>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="details-head">
+            <h3 id="detailTitle" class="details-title">Spend details</h3>
+            <span id="detailDate" class="status-sub"></span>
+          </div>
+          <ul id="detailsList" class="details-list"></ul>
+        </article>
+      </section>
+    </main>
+
+    <script>
+      const points = [
+        { date: "2026-03-20", end_balance: 38500, below_zero: false, daily_breakdown: { income_items: [{ id: "inc-0320-1", label: "Part-time shift pay", amount: 4200, note: "Cafe shift" }], spend_items: [{ id: "sp-0320-1", label: "Dinner", amount: 1700, note: "Ramen near station" }] } },
+        { date: "2026-03-21", end_balance: 36000, below_zero: false, daily_breakdown: { income_items: [], spend_items: [{ id: "sp-0321-1", label: "Groceries", amount: 2200, note: "Supermarket" }, { id: "sp-0321-2", label: "Train", amount: 600, note: "IC card top-up" }] } },
+        { date: "2026-03-22", end_balance: 32500, below_zero: false, daily_breakdown: { income_items: [], spend_items: [{ id: "sp-0322-1", label: "Movie ticket", amount: 1800, note: "Weekend" }] } },
+        { date: "2026-03-23", end_balance: 28000, below_zero: false, daily_breakdown: { income_items: [{ id: "inc-0323-1", label: "Used item sale", amount: 3000, note: "Marketplace app" }], spend_items: [{ id: "sp-0323-1", label: "Lunch", amount: 900, note: "Campus cafeteria" }] } },
+        { date: "2026-03-24", end_balance: 10200, below_zero: false, daily_breakdown: { income_items: [], spend_items: [{ id: "sp-0324-1", label: "SMBC card payment", amount: 17800, note: "Auto debit" }] } },
+        { date: "2026-03-25", end_balance: 210200, below_zero: false, daily_breakdown: { income_items: [{ id: "inc-0325-1", label: "Monthly salary", amount: 200000, note: "Main income" }], spend_items: [] } },
+        { date: "2026-03-26", end_balance: 5600, below_zero: false, daily_breakdown: { income_items: [], spend_items: [{ id: "sp-0326-1", label: "Rent", amount: 65000, note: "Monthly fixed cost" }, { id: "sp-0326-2", label: "Phone bill", amount: 4800, note: "Mobile plan" }, { id: "sp-0326-3", label: "Utilities", amount: 2600, note: "Electricity" }] } },
+        { date: "2026-03-27", end_balance: -7200, below_zero: true, daily_breakdown: { income_items: [], spend_items: [{ id: "sp-0327-1", label: "Life card payment", amount: 12800, note: "Auto debit" }, { id: "sp-0327-2", label: "Netflix fee", amount: 1490, note: "Subscription" }] } },
+        { date: "2026-03-28", end_balance: -4200, below_zero: true, daily_breakdown: { income_items: [{ id: "inc-0328-1", label: "Friend repayment", amount: 3000, note: "Transfer" }], spend_items: [] } },
+        { date: "2026-03-29", end_balance: -11500, below_zero: true, daily_breakdown: { income_items: [], spend_items: [{ id: "sp-0329-1", label: "Food + transport", amount: 7300, note: "Daily use" }] } },
+        { date: "2026-03-30", end_balance: 15000, below_zero: false, daily_breakdown: { income_items: [{ id: "inc-0330-1", label: "Temporary gig", amount: 26500, note: "Event support" }], spend_items: [] } },
+        { date: "2026-03-31", end_balance: 22000, below_zero: false, daily_breakdown: { income_items: [{ id: "inc-0331-1", label: "Refund", amount: 9000, note: "Order cancellation" }], spend_items: [{ id: "sp-0331-1", label: "Coffee", amount: 600, note: "Cafe" }] } }
+      ];
+
+      const chartEl = document.getElementById("chart");
+      const statusMainEl = document.getElementById("statusMain");
+      const statusSubEl = document.getElementById("statusSub");
+      const trendChipEl = document.getElementById("trendChip");
+      const jumpRiskBtnEl = document.getElementById("jumpRiskBtn");
+      const dayStatusEl = document.getElementById("dayStatus");
+      const incomeBtnEl = document.getElementById("incomeBtn");
+      const spendBtnEl = document.getElementById("spendBtn");
+      const incomeValueEl = document.getElementById("incomeValue");
+      const spendValueEl = document.getElementById("spendValue");
+      const detailTitleEl = document.getElementById("detailTitle");
+      const detailDateEl = document.getElementById("detailDate");
+      const detailsListEl = document.getElementById("detailsList");
+
+      const width = 920;
+      const height = 300;
+      const padLeft = 26;
+      const padRight = 28;
+      const padTop = 18;
+      const padBottom = 44;
+
+      let selectedIndex = 0;
+      let detailMode = "spend";
+
+      const values = points.map((p) => p.end_balance);
+      const min = Math.min(...values, 0);
+      const max = Math.max(...values, 0);
+      const span = Math.max(1, max - min);
+      const xStep = (width - padLeft - padRight) / (points.length - 1);
+
+      const x = (i) => padLeft + xStep * i;
+      const y = (v) => padTop + ((max - v) / span) * (height - padTop - padBottom);
+      const zeroY = y(0);
+
+      const firstRiskIndex = points.findIndex((p) => p.below_zero);
+      const hasRisk = firstRiskIndex >= 0;
+
+      setHeaderStatus();
+      trendChipEl.textContent = `Trend: ${trendWord(values[0], values.at(-1))}`;
+      drawChart();
+      setSelectedPoint(hasRisk ? firstRiskIndex : 0, "spend");
+
+      jumpRiskBtnEl.addEventListener("click", () => {
+        if (!hasRisk) return;
+        setSelectedPoint(firstRiskIndex, "spend");
+      });
+
+      incomeBtnEl.addEventListener("click", () => {
+        detailMode = "income";
+        renderSelectedDayPanel();
+      });
+
+      spendBtnEl.addEventListener("click", () => {
+        detailMode = "spend";
+        renderSelectedDayPanel();
+      });
+
+      function setHeaderStatus() {
+        if (hasRisk) {
+          statusMainEl.textContent = "WARNING: MAY HIT ZERO";
+          statusMainEl.className = "status-main warn";
+          statusSubEl.textContent = `Likely turning point: ${shortDate(points[firstRiskIndex].date)}`;
+        } else {
+          statusMainEl.textContent = "SAFE FOR NOW";
+          statusMainEl.className = "status-main safe";
+          statusSubEl.textContent = "No zero-cross in forecast range.";
+        }
+      }
+
+      function drawChart() {
+        chartEl.innerHTML = "";
+
+        chartEl.appendChild(line(0, zeroY, width, zeroY, "#cbd5e1", 1.5));
+
+        const fullPath = chartPath(0, points.length - 1);
+        chartEl.appendChild(path(fullPath, "#2563eb", 3.2));
+
+        if (hasRisk) {
+          const riskPath = chartPath(firstRiskIndex, points.length - 1);
+          chartEl.appendChild(path(riskPath, "#dc2626", 3.4));
+        }
+
+        points.forEach((point, i) => {
+          const dot = circle(x(i), y(point.end_balance), 5, point.below_zero ? "#dc2626" : "#2563eb");
+          dot.style.cursor = "pointer";
+          dot.setAttribute("data-index", String(i));
+          dot.addEventListener("click", () => setSelectedPoint(i, "spend"));
+          chartEl.appendChild(dot);
+
+          if (i % 2 === 0 || i === points.length - 1) {
+            chartEl.appendChild(text(x(i), height - 15, shortDate(point.date), 12, "#64748b", "middle"));
+          }
+        });
+      }
+
+      function setSelectedPoint(index, defaultMode) {
+        selectedIndex = index;
+        detailMode = defaultMode;
+        highlightPoint();
+        renderSelectedDayPanel();
+      }
+
+      function highlightPoint() {
+        const dots = chartEl.querySelectorAll("circle");
+        dots.forEach((dot, i) => {
+          dot.setAttribute("r", i === selectedIndex ? "8" : "5");
+          dot.setAttribute("stroke", i === selectedIndex ? "#0f172a" : "none");
+          dot.setAttribute("stroke-width", i === selectedIndex ? "2" : "0");
+        });
+      }
+
+      function renderSelectedDayPanel() {
+        const point = points[selectedIndex];
+        const incomeTotal = sum(point.daily_breakdown.income_items);
+        const spendTotal = sum(point.daily_breakdown.spend_items);
+        const dayUnsafe = point.below_zero || point.end_balance <= 0;
+
+        dayStatusEl.className = `day-status${dayUnsafe ? " warn" : ""}`;
+        dayStatusEl.textContent = `${shortDate(point.date)} • ${dayUnsafe ? "NOT SAFE" : "SAFE"}`;
+
+        incomeValueEl.textContent = `+${formatYen(incomeTotal)}`;
+        spendValueEl.textContent = `-${formatYen(spendTotal)}`;
+
+        incomeBtnEl.classList.toggle("active", detailMode === "income");
+        spendBtnEl.classList.toggle("active", detailMode === "spend");
+
+        detailTitleEl.textContent = detailMode === "income" ? "Earned details" : "Spent details";
+        detailDateEl.textContent = shortDate(point.date);
+
+        const list = detailMode === "income" ? point.daily_breakdown.income_items : point.daily_breakdown.spend_items;
+        renderDetails(list, detailMode);
+      }
+
+      function renderDetails(items, mode) {
+        detailsListEl.innerHTML = "";
+        if (!items.length) {
+          const li = document.createElement("li");
+          li.className = "detail-item";
+          li.innerHTML = `<div class="detail-label">No ${mode} items for this day.</div>`;
+          detailsListEl.appendChild(li);
+          return;
+        }
+
+        items.forEach((item) => {
+          const li = document.createElement("li");
+          li.className = "detail-item";
+          li.innerHTML = `
+            <div class="detail-row">
+              <span class="detail-label">${escapeHtml(item.label)}</span>
+              <span class="detail-amount">${mode === "income" ? "+" : "-"}${formatYen(item.amount)}</span>
+            </div>
+            ${item.note ? `<div class="detail-note">${escapeHtml(item.note)}</div>` : ""}
+          `;
+          detailsListEl.appendChild(li);
+        });
+      }
+
+      function chartPath(from, to) {
+        return points
+          .slice(from, to + 1)
+          .map((point, localIndex) => `${localIndex === 0 ? "M" : "L"} ${x(from + localIndex)} ${y(point.end_balance)}`)
+          .join(" ");
+      }
+
+      function trendWord(start, end) {
+        if (end > start + Math.abs(start) * 0.06) return "UP";
+        if (end < start - Math.abs(start) * 0.06) return "DOWN";
+        return "FLAT";
+      }
+
+      function sum(items) {
+        return items.reduce((total, item) => total + item.amount, 0);
+      }
+
+      function shortDate(isoDate) {
+        const d = new Date(`${isoDate}T00:00:00`);
+        return `${d.getMonth() + 1}/${d.getDate()}`;
+      }
+
+      function formatYen(value) {
+        return `¥${Math.abs(value).toLocaleString("en-US")}`;
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+
+      function line(x1, y1, x2, y2, stroke, strokeWidth) {
+        const el = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        el.setAttribute("x1", x1);
+        el.setAttribute("y1", y1);
+        el.setAttribute("x2", x2);
+        el.setAttribute("y2", y2);
+        el.setAttribute("stroke", stroke);
+        el.setAttribute("stroke-width", strokeWidth);
+        return el;
+      }
+
+      function path(d, stroke, strokeWidth) {
+        const el = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        el.setAttribute("d", d);
+        el.setAttribute("fill", "none");
+        el.setAttribute("stroke", stroke);
+        el.setAttribute("stroke-width", strokeWidth);
+        el.setAttribute("stroke-linecap", "round");
+        el.setAttribute("stroke-linejoin", "round");
+        return el;
+      }
+
+      function circle(cx, cy, r, fill) {
+        const el = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        el.setAttribute("cx", cx);
+        el.setAttribute("cy", cy);
+        el.setAttribute("r", r);
+        el.setAttribute("fill", fill);
+        return el;
+      }
+
+      function text(xPos, yPos, value, size, color, anchor) {
+        const el = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        el.setAttribute("x", xPos);
+        el.setAttribute("y", yPos);
+        el.setAttribute("font-size", String(size));
+        el.setAttribute("font-weight", "600");
+        el.setAttribute("fill", color);
+        el.setAttribute("text-anchor", anchor);
+        el.textContent = value;
+        return el;
+      }
+    </script>
+  </body>
+</html>
