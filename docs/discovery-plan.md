@@ -10,7 +10,7 @@
 
 ### 設計済み (DESIGN.md + deep-dives)
 - メール自動検知 → リアルタイム支出通知
-- 「今日あといくら使える」表示
+- 自由残額 (Spendable Balance) ヒーローカード表示
 - freee連携 → シフトベース給与見込み (API検証済み)
 - 引き落とし日の残高不足アラート
 - SAFE / WARNING 二値ステータス
@@ -36,7 +36,7 @@
 | # | 仮説 | カテゴリ | Impact | Uncertainty | 優先度 |
 |---|------|---------|--------|-------------|--------|
 | H6 | 信頼できる短期キャッシュフローが見えると、金銭的不安・回避行動が実際に減る | Value | Critical | High | ★★★ |
-| H4 | 「今日あといくら使える」を日常的に確認する習慣が生まれる | Value | Critical | High | ★★★ |
+| H4 | 自由残額 (あと自由に使える ¥XX,XXX) を日常的に確認する習慣が生まれる | Value | Critical | High | ★★★ |
 | H1 | 大学生はクレカの短期金銭状態が不透明で困っている | Value | Critical | Medium | ★★☆ |
 | H5 | Free → Standard (¥300) への転換率 5%以上 | Viability | High | High | ★★☆ |
 | H8 | メール通知のない取引を補完しないと予測精度が信頼を失うレベルまで下がる | Usability | High | Medium | ★☆☆ |

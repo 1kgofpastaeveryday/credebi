@@ -49,6 +49,23 @@ Concrete applications:
 - `supabase/functions/` — Edge Functions (Deno)
 - `supabase/functions/_shared/api.ts` — Shared error/response types
 
+## UX Design Process Documentation (UofT MI-UXD Application)
+
+The user is applying to the University of Toronto Master of Information — User Experience Design (MI-UXD) concentration. Design decisions in this project serve as secondary application material.
+
+### What to record
+
+Whenever you work on a design decision, user-facing change, or UX-related tradeoff, append a brief entry to `docs/ux-design-journal.md` with:
+
+1. **Date**
+2. **Decision**: What was decided and why
+3. **User problem**: What user pain point motivated this
+4. **Alternatives considered**: What other approaches were evaluated
+5. **Evidence**: Any user feedback, data, or observation that informed the choice
+6. **Outcome**: What changed for the user as a result
+
+Keep entries concise (3-8 sentences each). Raw honesty > polished narrative. This is a personal finance app where UX directly affects financial safety — document how "No Silent Failures" and "Err Toward Safety" principles translate into concrete design choices.
+
 ## Key Conventions
 
 - Error responses use `{ ok, error: { code, message, retryable }, request_id }` envelope

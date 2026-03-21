@@ -1001,24 +1001,56 @@ let subscription = supabase
   .subscribe()
 ```
 
-## 10. 給料日前日の予測残高
+## 10. 自由残額 (Spendable Balance) — 残額フォーカス
+
+### 10a. 設計思想
 
 ~~「今日あといくら使える？」~~ → PROJ-R4-006: daily budget (日割り計算) は削除。
 大学生の支出パターンは日によって大きく変動するため、均等割りの日次予算は非現実的。
-代わりに projection engine の既存出力から「事実としての予測残高」を表示する。
+
+代わりに「自由残額」を**ダッシュボードのヒーロー数値**として常時表示する。
+これは予測エンジンの既存出力からの派生メトリクスであり、新しい計算は行わない。
+
+```
+自由残額 = 給料日前日の予測残高 (pre_payday_balance)
+
+つまり:
+  現在の銀行残高 (Layer 1: truth anchor)
+  + 給料日までの見込み収入 (Layer 3)
+  - 給料日までの確定引き落とし (Layer 2: committed charges)
+  - 給料日までの固定費 (Layer 3: subscriptions, fixed costs)
+  - 見込み変動費 (Layer 3: 過去3ヶ月平均)
+  = 給料日時点で手元に残る見込み額
+```
+
+**日割りにしない理由は変わらない。** 「1日¥2,000まで」は非現実的だが、
+「給料日まで¥38,200の余裕がある」は行動可能な事実。
+
+**Design Principle #3 との関係:**
+- 見込み変動費は過去3ヶ月平均を使う（楽観しない）
+- accumulating_charge はオープン期間の現時点累計をそのまま含める（安全側）
+- 自由残額が負値になりうる — その場合は WARNING/CRITICAL に直結
+
+### 10b. ProjectionSummary
 
 ```typescript
-// Projection interface に追加 (aggregate summary)
 interface ProjectionSummary {
-  // 次の給料日前日時点の予測残高 (aggregate_balance_bars の min)
-  // = 現在残高 - 給料日までの全確定支出
-  min_projected_balance: number
+  // 自由残額 (ヒーロー数値): 給料日前日の予測残高
+  // 給料日未設定の場合は min_projected_balance にフォールバック
+  spendable_balance: number
+
+  // 補助メトリクス
+  min_projected_balance: number     // 期間中の最低残高
   min_projected_date: string        // その最低残高になる日付
   next_payday: string | null        // 次の給料日 (projected_incomes から)
   pre_payday_balance: number | null // 給料日前日の予測残高 (null = 給料日未設定)
+
+  // staleness (Design Principle #2)
+  data_as_of: string                // 最新の upstream data timestamp
+  is_stale: boolean
+  stale_sources: string[]
 }
 
-// calculateProjection の return に追加:
 function computeProjectionSummary(projection: Projection): ProjectionSummary {
   const minBar = projection.aggregate_balance_bars.reduce(
     (min, bar) => bar.balance < min.balance ? bar : min,
@@ -1039,28 +1071,91 @@ function computeProjectionSummary(projection: Projection): ProjectionSummary {
     prePaydayBalance = bar?.balance ?? minBar.balance
   }
 
+  // Spendable balance: pre-payday if available, otherwise min projected
+  // Using min as fallback is conservative (Design Principle #3)
+  const spendableBalance = prePaydayBalance ?? minBar.balance
+
   return {
+    spendable_balance: spendableBalance,
     min_projected_balance: minBar.balance,
     min_projected_date: minBar.date,
     next_payday: nextPayday?.date ?? null,
     pre_payday_balance: prePaydayBalance,
+    data_as_of: projection.data_as_of,
+    is_stale: projection.is_stale,
+    stale_sources: projection.stale_sources,
   }
 }
 ```
 
-```
-ダッシュボード上部に常時表示:
+### 10c. ダッシュボード ヒーローカード
 
-┌───────────────────────────────────────┐
-│ 給料日前日 (3/24) の予測残高           │
-│ ¥38,200                               │
-│                                        │
-│ 最低残高予測: ¥12,400 (3/15 引き落とし後) │
-└───────────────────────────────────────┘
+```
+ダッシュボード上部に常時表示。アプリを開いたら最初に目に入る数字。
+
+■ 通常状態 (SAFE):
+┌─────────────────────────────────────────┐
+│  あと自由に使える                          │
+│  ¥38,200                    ← ヒーロー数値 │
+│                                           │
+│  次の給料日  3/25 (火)                      │
+│  最低残高    ¥12,400 (3/15 引き落とし後)      │
+│  ───────────────────────                  │
+│  SAFE  口座残高は足りる見込みです              │
+└─────────────────────────────────────────┘
+
+■ WARNING状態:
+┌─────────────────────────────────────────┐
+│  あと自由に使える                          │
+│  ¥2,100                     ← 黄色       │
+│                                           │
+│  次の給料日  3/25 (火)                      │
+│  最低残高    ¥-3,200 (3/15 引き落とし後)     │
+│  ───────────────────────                  │
+│  ⚠ WARNING  3/15の引き落としで不足の可能性    │
+└─────────────────────────────────────────┘
+
+■ CRITICAL状態:
+┌─────────────────────────────────────────┐
+│  あと自由に使える                          │
+│  ¥-8,400                    ← 赤         │
+│                                           │
+│  次の給料日  3/25 (火)                      │
+│  最低残高    ¥-8,400 (3/10 引き落とし後)     │
+│  ───────────────────────                  │
+│  🔴 CRITICAL  残高不足が見込まれます         │
+│  入金が必要です                             │
+└─────────────────────────────────────────┘
+
+■ 給料日未設定:
+┌─────────────────────────────────────────┐
+│  最低予測残高                               │
+│  ¥12,400                    ← ヒーロー数値 │
+│  (3/15 引き落とし後)                        │
+│  ───────────────────────                  │
+│  給料日を設定するとより正確な予測ができます      │
+└─────────────────────────────────────────┘
+
+■ データ古い (is_stale = true):
+┌─────────────────────────────────────────┐
+│  あと自由に使える                          │
+│  ¥38,200                    ← オレンジ帯  │
+│                                           │
+│  ⚠ データが古い可能性があります               │
+│    銀行残高: 3日前に更新                     │
+│  ───────────────────────                  │
+│  残高を更新してください                      │
+└─────────────────────────────────────────┘
 ```
 
-表示はただの事実。「使っていい額」ではなく「こうなる見込み」。
-解釈と行動はユーザーに委ねる。
+### 10d. 設計判断
+
+- **「使っていい額」ではなく「自由に使える余裕」。** 日割り予算のように消費を誘導しない。
+  「¥38,200余裕がある」は事実の提示。「¥5,000使っていい」は行動の指示。Credebiは前者。
+- **ヒーロー数値は1つだけ。** 情報過多を避ける。詳細はタップで展開。
+- **色セマンティクスは SAFE/WARNING/CRITICAL に直結。** 数値の大小ではなく、
+  min_projected_balance が負になるかどうかで判定（既存ロジック）。
+- **広告禁止ゾーン。** このカード周辺には広告を配置しない（既存ルール維持）。
 
 ## 11. 銀行残高更新チャネル
 

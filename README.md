@@ -65,4 +65,4 @@ DESIGN.md             アーキテクチャ全体設計
 
 ## License
 
-MIT
+[AGPL-3.0](LICENSE)
