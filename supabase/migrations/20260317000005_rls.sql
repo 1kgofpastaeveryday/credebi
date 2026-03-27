@@ -25,14 +25,25 @@ ALTER TABLE api_idempotency_keys ENABLE ROW LEVEL SECURITY;
 ALTER TABLE parse_failures ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pending_ec_correlations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE system_alerts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE system_heartbeats ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_suggestion_stats ENABLE ROW LEVEL SECURITY;
 ALTER TABLE suggestion_feedback ENABLE ROW LEVEL SECURITY;
 
 -- ============================================================
 -- Standard pattern: user_id = auth.uid()
 -- ============================================================
-CREATE POLICY "users_own_data" ON users
-  FOR ALL USING (id = auth.uid());
+CREATE POLICY users_select ON users
+  FOR SELECT USING (id = auth.uid());
+
+CREATE POLICY users_insert ON users
+  FOR INSERT WITH CHECK (id = auth.uid() AND tier = 0);
+
+CREATE POLICY users_update ON users
+  FOR UPDATE USING (id = auth.uid())
+  WITH CHECK (id = auth.uid());
+
+CREATE POLICY users_delete ON users
+  FOR DELETE USING (id = auth.uid());
 
 CREATE POLICY "users_own_data" ON email_connections
   FOR ALL USING (user_id = auth.uid());

@@ -168,13 +168,14 @@ interface AccountProjection {
 interface TimelineEvent {
   id: string
   date: string              // ISO date
-  type: 'income' | 'card_charge' | 'fixed_cost'
+  type: 'income' | 'card_charge' | 'fixed_cost' | 'variable_cost'
   account_id?: string       // card_charge: the credit card id
   bank_account_id: string   // DT-159: which bank account is affected
                             //   income → projected_incomes.bank_account_id
                             //   card_charge → card.settlement_account_id
                             //   fixed_cost (direct debit) → subscription.account_id (if bank)
                             //   fixed_cost (card-paid) → card.settlement_account_id
+                            //   variable_cost → spending share で按分した bank account
   description: string
   amount: number            // 正:入金, 負:出金
   running_balance: number   // per-account running balance at this point
@@ -348,6 +349,16 @@ async function calculateProjection(userId: string): Promise<Projection> {
     return true
   })
 
+  // ── 4b. Variable costs — monthly_summaries average + account routing ──
+  // PROJ-R5-001: estimated_variable must be explicitly generated.
+  // Source of truth = monthly_summaries.variable_costs + uncategorized.
+  // We include uncategorized on purpose (Design Principle #3: conservative).
+  const variableCosts = await estimateVariableCosts(
+    userId,
+    bankAccounts.data ?? [],
+    cardAccounts.data ?? [],
+  )
+
   // ── 5. Build per-account timelines (DT-159: the real truth unit) ──
   // Build a settlement routing map: card.id → bank account
   const cardSettlementMap = new Map<string, string>()  // card_id → bank_account_id
@@ -378,9 +389,14 @@ async function calculateProjection(userId: string): Promise<Projection> {
       // Card-paid fixed costs are handled via card charges, not here
       return false
     })
+    const accountVariableCosts = variableCosts.filter(vc => vc.bank_account_id === bank.id)
 
     const timeline = buildTimeline(
-      bank.current_balance ?? 0, accountIncome, accountCardCharges, accountFixedCosts
+      bank.current_balance ?? 0,
+      accountIncome,
+      accountCardCharges,
+      accountFixedCosts,
+      accountVariableCosts,
     )
     const balanceBars = buildBalanceBars(bank.current_balance ?? 0, timeline, now)
     const dangerZones = detectDangerZones(balanceBars)
@@ -409,8 +425,8 @@ async function calculateProjection(userId: string): Promise<Projection> {
   // DT-R4-001: Aggregate timeline must NOT double-count card-paid fixed costs.
   // Per-account logic already excludes card-paid fixed costs (they flow through cardCharges).
   // For aggregate, we must also exclude them here — they're already inside cardCharges.
+  // Unrouted fixed costs are appended separately below, so they must NOT be included here.
   const directDebitFixedCosts = fixedCosts.filter(fc => {
-    if (!fc.account_id) return true  // unknown payment method → include
     if (bankAccountMap.has(fc.account_id)) return true  // direct debit from bank
     // Card-paid fixed costs (fc.account_id is a credit card) → exclude (already in cardCharges)
     return false
@@ -421,6 +437,7 @@ async function calculateProjection(userId: string): Promise<Projection> {
     [...income],  // all income (account-scoped + unknown)
     [...cardCharges],  // all card charges (includes card-paid fixed costs via settlement)
     [...directDebitFixedCosts, ...unroutedFixedCosts],  // only direct-debit + unrouted
+    [...variableCosts],  // monthly_summaries based estimate, already bank-routed when possible
   )
   const aggregateBalanceBars = buildBalanceBars(aggregateBalance, aggregateTimeline, now)
   const aggregateDangerZones = detectDangerZones(aggregateBalanceBars)
@@ -566,6 +583,83 @@ async function calculateProjection(userId: string): Promise<Projection> {
     stale_sources: staleSources,
   }
 }
+```
+
+```typescript
+interface EstimatedVariableCost {
+  id: string
+  date: string
+  bank_account_id: string
+  amount: number            // positive absolute amount
+  source_months: string[]   // e.g. ['2026-01', '2026-02', '2026-03']
+}
+
+// PROJ-R5-001: variable costs are not guessed from thin air.
+// We derive them from monthly_summaries so the engine has an explicit producer
+// for "estimated_variable" in the main formula.
+async function estimateVariableCosts(
+  userId: string,
+  bankAccounts: FinancialAccount[],
+  cardAccounts: FinancialAccount[],
+): Promise<EstimatedVariableCost[]> {
+  const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Tokyo' })
+  const summaries = await supabase
+    .from('monthly_summaries')
+    .select('year_month, variable_costs, uncategorized')
+    .eq('user_id', userId)
+    .order('year_month', { ascending: false })
+    .limit(3)
+
+  const closedMonths = summaries.data ?? []
+  if (closedMonths.length === 0 || bankAccounts.length === 0) return []
+
+  const monthlyAverage = Math.ceil(
+    closedMonths.reduce(
+      (sum, m) => sum + (m.variable_costs ?? 0) + (m.uncategorized ?? 0),
+      0,
+    ) / closedMonths.length
+  )
+  if (monthlyAverage <= 0) return []
+
+  // Route the estimate to bank accounts using the recent 90-day spending mix.
+  // Bank/debit transactions stay on their bank account.
+  // Card transactions are re-routed to the card's settlement bank.
+  // If there is insufficient history, fall back to the primary bank account.
+  const settlementMap = new Map(
+    cardAccounts
+      .filter(card => card.settlement_account_id)
+      .map(card => [card.id, card.settlement_account_id!])
+  )
+  const routingWeights = await buildVariableCostRoutingWeights(userId, settlementMap)
+  const fallbackBankId = bankAccounts[0].id
+
+  const horizonDays = 60
+  const days = Array.from({ length: horizonDays }, (_, i) => addDays(todayStr, i + 1))
+  const perDayBase = Math.ceil(monthlyAverage / 30)
+
+  return days.flatMap(date => {
+    const weights = routingWeights.length > 0
+      ? routingWeights
+      : [{ bank_account_id: fallbackBankId, ratio: 1 }]
+
+    return weights.map(weight => ({
+      id: `estimated_variable:${weight.bank_account_id}:${date}`,
+      date,
+      bank_account_id: weight.bank_account_id,
+      amount: Math.ceil(perDayBase * weight.ratio),
+      source_months: closedMonths.map(m => m.year_month),
+    }))
+  })
+}
+
+// Helper contract:
+// buildVariableCostRoutingWeights() groups the last 90 days of variable transactions by
+// settlement bank and returns [{ bank_account_id, ratio }] where ratios sum to 1.
+// "variable transactions" = expense transactions that are not income and not matched to
+// subscriptions / fixed_cost_items. Unknown routing is excluded from per-account weights.
+
+// buildTimeline() accepts estimated variable costs as a fifth input and converts them to
+// negative TimelineEvent(type='variable_cost') rows on their target dates.
 ```
 
 ### カード引き落とし額の計算
@@ -779,7 +873,8 @@ interface RecurringIncome {
 ```sql
 -- 実装時は DESIGN.md の以下テーブルを利用:
 -- projected_incomes: 見込み収入の定義
--- fixed_cost_items: サブスク以外の固定費 (家賃/通信費など)
+-- fixed_cost_items: サブスク以外の固定費 (家賃/通信費など, account_id で支払口座/カードを保持)
+-- monthly_summaries: variable_costs + uncategorized から estimated_variable を算出
 ```
 
 ## 6. アラートロジック

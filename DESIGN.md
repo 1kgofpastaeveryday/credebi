@@ -192,7 +192,7 @@ CREATE TABLE users (
   id              UUID PRIMARY KEY DEFAULT auth.uid(),
   display_name    TEXT,
   timezone        TEXT DEFAULT 'Asia/Tokyo',
-  tier            INT DEFAULT 3,  -- 0:Free, 1:Standard(¥300), 2:Pro(¥980), 3:Owner(内部用)
+  tier            INT DEFAULT 0 CHECK (tier BETWEEN 0 AND 3),  -- 0:Free, 1:Standard(¥300), 2:Pro(¥980), 3:Owner(内部用)
   -- DT-160: User-configurable push notification level
   notification_level TEXT DEFAULT 'medium'
     CHECK (notification_level IN ('least', 'less', 'medium', 'full')),
@@ -644,6 +644,26 @@ CREATE TRIGGER trg_check_income_bank_account_ownership
   BEFORE INSERT OR UPDATE OF bank_account_id ON projected_incomes
   FOR EACH ROW EXECUTE FUNCTION check_income_bank_account_ownership();
 
+-- DT-199: Prevent tier self-escalation (only service_role can change tier)
+CREATE OR REPLACE FUNCTION check_tier_immutable()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF OLD.tier IS DISTINCT FROM NEW.tier THEN
+    IF current_setting('role') != 'service_role' THEN
+      RAISE EXCEPTION 'tier can only be changed by service_role';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SET search_path = public, pg_temp;
+
+REVOKE EXECUTE ON FUNCTION check_tier_immutable FROM PUBLIC;
+
+CREATE TRIGGER trg_check_tier_immutable
+  BEFORE UPDATE ON users
+  FOR EACH ROW
+  EXECUTE FUNCTION check_tier_immutable();
+
 -- ============================================================
 -- 収入ソース連携 (freee HR, ジョブカン等)
 -- ============================================================
@@ -727,6 +747,7 @@ CREATE TABLE fixed_cost_items (
   billing_cycle   TEXT DEFAULT 'monthly',   -- 'monthly', 'yearly'
   billing_day     INT,                      -- 毎月の引落日
   next_billing_at DATE,
+  account_id      UUID REFERENCES financial_accounts(id) ON DELETE SET NULL, -- 銀行引落 or カード支払い先
   category_id     UUID REFERENCES categories(id) ON DELETE SET NULL, -- DT-058
   is_active       BOOLEAN DEFAULT true,
   created_at      TIMESTAMPTZ DEFAULT now(),
@@ -812,8 +833,18 @@ ALTER TABLE shift_records ENABLE ROW LEVEL SECURITY;
 -- service_role は RLS をバイパスする (Edge Function内部処理用)
 
 -- 標準パターン: user_id = auth.uid()
-CREATE POLICY "users_own_data" ON users
-  FOR ALL USING (id = auth.uid());
+CREATE POLICY users_select ON users
+  FOR SELECT USING (id = auth.uid());
+
+CREATE POLICY users_insert ON users
+  FOR INSERT WITH CHECK (id = auth.uid() AND tier = 0);
+
+CREATE POLICY users_update ON users
+  FOR UPDATE USING (id = auth.uid())
+  WITH CHECK (id = auth.uid());
+
+CREATE POLICY users_delete ON users
+  FOR DELETE USING (id = auth.uid());
 
 CREATE POLICY "users_own_data" ON email_connections
   FOR ALL USING (user_id = auth.uid());
@@ -1009,6 +1040,19 @@ CREATE POLICY "users_read_own_alerts" ON system_alerts
 
 CREATE INDEX idx_system_alerts_unresolved ON system_alerts(alert_type, created_at)
   WHERE resolved_at IS NULL;
+
+CREATE TABLE system_heartbeats (
+  job_name           TEXT PRIMARY KEY,
+  last_success_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expected_interval  INTERVAL NOT NULL,
+  last_status        TEXT NOT NULL DEFAULT 'ok'
+    CHECK (last_status IN ('ok', 'error')),
+  details            JSONB NOT NULL DEFAULT '{}',
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- cron / Edge Function の成功マーカーを保持する。
+-- pg_net + pg_cron は dispatch 成功しか見えないため、
+-- 実処理が終わった Edge Function 側が record_system_heartbeat() を呼ぶ。
 
 -- ============================================================
 -- historyId 条件付き更新 (単調増加保証)
@@ -2004,7 +2048,21 @@ SELECT cron.schedule(
       )$$
 );
 
+-- Heartbeat expectation seed
+-- Edge Function 側は「dispatch成功」ではなく「処理成功」の直後に
+-- record_system_heartbeat(job_name, expected_interval) を呼ぶこと。
+INSERT INTO system_heartbeats (job_name, expected_interval, details)
+VALUES
+  ('detect-broken-connections', INTERVAL '12 hours', '{"owner":"pg_cron","kind":"dead_mans_switch"}'::jsonb),
+  ('renew-gmail-watches', INTERVAL '24 hours', '{"owner":"edge_function","kind":"heartbeat_required"}'::jsonb),
+  ('update-projection', INTERVAL '24 hours', '{"owner":"edge_function","kind":"heartbeat_required"}'::jsonb),
+  ('nudge-balance-update', INTERVAL '24 hours', '{"owner":"edge_function","kind":"heartbeat_required"}'::jsonb)
+ON CONFLICT (job_name) DO NOTHING;
+
 -- Gmail watch renewal (日次)
+-- renew-gmail-watch Edge Function は成功時に
+--   SELECT record_system_heartbeat('renew-gmail-watches', INTERVAL '24 hours');
+-- を必ず呼ぶ。pg_net は fire-and-forget のため dispatch 成功では足りない。
 SELECT cron.schedule(
   'renew-gmail-watches',
   '0 2 * * *',  -- 毎日 02:00 UTC (11:00 JST)
@@ -2016,6 +2074,9 @@ SELECT cron.schedule(
 );
 
 -- Monthly summaries update (日次)
+-- update-projection Edge Function は成功時に
+--   SELECT record_system_heartbeat('update-projection', INTERVAL '24 hours');
+-- を呼び、projection 更新の heartbeat を残す。
 SELECT cron.schedule(
   'update-monthly-summaries',
   '30 3 * * *',  -- 毎日 03:30 UTC (12:30 JST)
@@ -2141,6 +2202,9 @@ SELECT cron.schedule(
 
 -- DT-107: Bank balance update nudge (payday翌日にPush通知)
 -- 毎日実行。payday翌日 (JST) かつ balance_updated_at が payday より前のユーザーに通知。
+-- nudge-balance-update Edge Function は成功時に
+--   SELECT record_system_heartbeat('nudge-balance-update', INTERVAL '24 hours');
+-- を呼ぶ。
 SELECT cron.schedule(
   'nudge-balance-update',
   '0 0 * * *',  -- 毎日 00:00 UTC (09:00 JST)
@@ -2169,6 +2233,14 @@ SELECT cron.schedule(
   'detect-broken-connections',
   '0 */12 * * *',  -- 12時間ごと
   $$
+  SELECT record_system_heartbeat(
+    'detect-broken-connections',
+    INTERVAL '12 hours',
+    now(),
+    'ok',
+    jsonb_build_object('source', 'pg_cron')
+  );
+
   -- Part 1: Email connections (stale sync OR expired watch)
   WITH broken_email AS (
     UPDATE email_connections
@@ -2217,6 +2289,40 @@ SELECT cron.schedule(
   -- TODO: Trigger Push notification to affected users via send-push Edge Function
   $$
 );
+
+-- Heartbeat freshness check (30分ごと)
+-- 目的:
+-- 1. pg_net fire-and-forget で見えない Edge Function failure を可視化する
+-- 2. DMS 自身の heartbeat freshness を外部監視対象にする
+SELECT cron.schedule(
+  'check-heartbeat-freshness',
+  '*/30 * * * *',
+  $$
+  INSERT INTO system_alerts (alert_type, message, created_at)
+  SELECT 'stale_heartbeat',
+         format(
+           'heartbeat %s stale: last_success_at=%s expected_interval=%s',
+           sh.job_name,
+           sh.last_success_at,
+           sh.expected_interval
+         ),
+         now()
+  FROM system_heartbeats sh
+  WHERE sh.last_success_at < now() - (sh.expected_interval * 2)
+    AND NOT EXISTS (
+      SELECT 1
+      FROM system_alerts sa
+      WHERE sa.alert_type = 'stale_heartbeat'
+        AND sa.resolved_at IS NULL
+        AND sa.message LIKE format('heartbeat %s stale:%%', sh.job_name)
+    );
+  $$
+);
+
+-- Monitor-the-monitor:
+-- 外部 uptime monitor / Edge health endpoint が
+-- system_heartbeats.job_name='detect-broken-connections' を確認し、
+-- last_success_at が 24h 以上古ければ「pg_cron or DMS 停止」とみなして通知する。
 
 -- ============================================================
 -- TTL Cleanup: api_idempotency_keys (24時間超を日次削除)

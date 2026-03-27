@@ -9,7 +9,7 @@ CREATE TABLE users (
   id              UUID PRIMARY KEY DEFAULT auth.uid(),
   display_name    TEXT,
   timezone        TEXT DEFAULT 'Asia/Tokyo',
-  tier            INT DEFAULT 3,  -- 0:Free, 1:Standard(¥300), 2:Pro(¥980), 3:Owner(内部用)
+  tier            INT DEFAULT 0 CHECK (tier BETWEEN 0 AND 3),  -- 0:Free, 1:Standard(¥300), 2:Pro(¥980), 3:Owner(内部用)
   -- DT-160: User-configurable push notification level
   notification_level TEXT DEFAULT 'medium'
     CHECK (notification_level IN ('least', 'less', 'medium', 'full')),
@@ -292,6 +292,7 @@ CREATE TABLE fixed_cost_items (
   billing_cycle   TEXT DEFAULT 'monthly',
   billing_day     INT,
   next_billing_at DATE,
+  account_id      UUID REFERENCES financial_accounts(id) ON DELETE SET NULL,
   category_id     UUID REFERENCES categories(id) ON DELETE SET NULL,
   is_active       BOOLEAN DEFAULT true,
   created_at      TIMESTAMPTZ DEFAULT now(),
@@ -440,4 +441,14 @@ CREATE TABLE suggestion_feedback (
   chosen_category_id UUID,
   chosen_merchant    TEXT,
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE system_heartbeats (
+  job_name          TEXT PRIMARY KEY,
+  last_success_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expected_interval INTERVAL NOT NULL,
+  last_status       TEXT NOT NULL DEFAULT 'ok'
+    CHECK (last_status IN ('ok', 'error')),
+  details           JSONB NOT NULL DEFAULT '{}',
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );

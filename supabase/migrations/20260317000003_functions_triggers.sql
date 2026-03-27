@@ -107,6 +107,169 @@ CREATE TRIGGER trg_check_income_bank_account_ownership
   FOR EACH ROW EXECUTE FUNCTION check_income_bank_account_ownership();
 
 -- ============================================================
+-- account_id IDOR prevention on transactions / subscriptions
+-- ============================================================
+CREATE OR REPLACE FUNCTION check_transaction_account_ownership()
+RETURNS TRIGGER AS $$
+DECLARE
+  target_user_id UUID;
+BEGIN
+  IF NEW.account_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT user_id INTO target_user_id
+  FROM financial_accounts WHERE id = NEW.account_id;
+
+  IF target_user_id IS NULL THEN
+    RAISE EXCEPTION 'account_id references non-existent account';
+  END IF;
+  IF target_user_id <> NEW.user_id THEN
+    RAISE EXCEPTION 'account_id must reference own account';
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_check_transaction_account_ownership
+  BEFORE INSERT OR UPDATE OF account_id, user_id ON transactions
+  FOR EACH ROW EXECUTE FUNCTION check_transaction_account_ownership();
+
+CREATE OR REPLACE FUNCTION check_subscription_account_ownership()
+RETURNS TRIGGER AS $$
+DECLARE
+  target_user_id UUID;
+BEGIN
+  IF NEW.account_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT user_id INTO target_user_id
+  FROM financial_accounts WHERE id = NEW.account_id;
+
+  IF target_user_id IS NULL THEN
+    RAISE EXCEPTION 'account_id references non-existent account';
+  END IF;
+  IF target_user_id <> NEW.user_id THEN
+    RAISE EXCEPTION 'account_id must reference own account';
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_check_subscription_account_ownership
+  BEFORE INSERT OR UPDATE OF account_id, user_id ON subscriptions
+  FOR EACH ROW EXECUTE FUNCTION check_subscription_account_ownership();
+
+CREATE OR REPLACE FUNCTION check_fixed_cost_item_account_ownership()
+RETURNS TRIGGER AS $$
+DECLARE
+  target_user_id UUID;
+BEGIN
+  IF NEW.account_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT user_id INTO target_user_id
+  FROM financial_accounts WHERE id = NEW.account_id;
+
+  IF target_user_id IS NULL THEN
+    RAISE EXCEPTION 'account_id references non-existent account';
+  END IF;
+  IF target_user_id <> NEW.user_id THEN
+    RAISE EXCEPTION 'account_id must reference own account';
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_check_fixed_cost_item_account_ownership
+  BEFORE INSERT OR UPDATE OF account_id, user_id ON fixed_cost_items
+  FOR EACH ROW EXECUTE FUNCTION check_fixed_cost_item_account_ownership();
+
+-- ============================================================
+-- users.tier protection
+-- ============================================================
+CREATE OR REPLACE FUNCTION protect_user_tier_changes()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.tier IS DISTINCT FROM OLD.tier
+     AND current_user <> 'postgres'
+     AND COALESCE(auth.role(), '') <> 'service_role' THEN
+    RAISE EXCEPTION 'tier can only be changed by service_role';
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_protect_user_tier_changes
+  BEFORE UPDATE OF tier ON users
+  FOR EACH ROW EXECUTE FUNCTION protect_user_tier_changes();
+
+-- DT-199: Prevent tier self-escalation (only service_role can change tier)
+CREATE OR REPLACE FUNCTION check_tier_immutable()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF OLD.tier IS DISTINCT FROM NEW.tier THEN
+    IF current_setting('role') != 'service_role' THEN
+      RAISE EXCEPTION 'tier can only be changed by service_role';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SET search_path = public, pg_temp;
+
+REVOKE EXECUTE ON FUNCTION check_tier_immutable FROM PUBLIC;
+
+CREATE TRIGGER trg_check_tier_immutable
+  BEFORE UPDATE ON users
+  FOR EACH ROW
+  EXECUTE FUNCTION check_tier_immutable();
+
+-- ============================================================
+-- Heartbeat recorder for cron / Edge Functions
+-- ============================================================
+CREATE OR REPLACE FUNCTION record_system_heartbeat(
+  p_job_name TEXT,
+  p_expected_interval INTERVAL DEFAULT INTERVAL '24 hours',
+  p_seen_at TIMESTAMPTZ DEFAULT now(),
+  p_last_status TEXT DEFAULT 'ok',
+  p_details JSONB DEFAULT '{}'::jsonb
+) RETURNS VOID AS $$
+BEGIN
+  INSERT INTO system_heartbeats (
+    job_name,
+    last_success_at,
+    expected_interval,
+    last_status,
+    details,
+    updated_at
+  )
+  VALUES (
+    p_job_name,
+    p_seen_at,
+    p_expected_interval,
+    p_last_status,
+    COALESCE(p_details, '{}'::jsonb),
+    now()
+  )
+  ON CONFLICT (job_name) DO UPDATE
+  SET last_success_at   = EXCLUDED.last_success_at,
+      expected_interval = EXCLUDED.expected_interval,
+      last_status       = EXCLUDED.last_status,
+      details           = EXCLUDED.details,
+      updated_at        = now();
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+REVOKE EXECUTE ON FUNCTION record_system_heartbeat(TEXT, INTERVAL, TIMESTAMPTZ, TEXT, JSONB) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION record_system_heartbeat(TEXT, INTERVAL, TIMESTAMPTZ, TEXT, JSONB) TO service_role;
+
+-- ============================================================
 -- Bank balance update SP (atomic previous_balance shift)
 -- ============================================================
 CREATE OR REPLACE FUNCTION update_bank_balance(

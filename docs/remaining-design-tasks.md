@@ -1,9 +1,9 @@
-# 残り設計タスク一覧 (2026-03-15 更新)
+# 残り設計タスク一覧 (2026-03-28 更新)
 
 このドキュメントは、現時点で未完了の「設計系タスク」を集約したバックログ。
 実装タスクではなく、仕様確定・運用方針・契約定義・安全性要件の確定を対象にする。
 
-> **🏁 Round 1 + Round 2 + Round 3 + Round 4 全P0完了 (2026-03-15)**
+> **🏁 Round 1 + Round 2 + Round 3 + Round 4 のP0完了 / Round 5 追加 (2026-03-28)**
 > **Round 1**: 5観点マルチエージェントレビュー → DT-095~DT-129 (35件)。P0全7件即時修正済み。
 > **Round 2**: 5観点再レビュー (Security/Projection/Cross-doc/UX/Ops) + Composition Layer 設計
 > → DT-130~DT-146 (17件)。全17件修正済み。
@@ -12,8 +12,11 @@
 > **Round 4**: DT-159導入後の再レビュー → DT-161~DT-197 (37件)。P0全10件 + P1 14件修正済み。
 > → IDOR trigger, aggregate dedup, Layer B SP, EXIF JST, watch_expiry, daily budget→予測残高,
 >   API auth RLS統一, bootstrap 30日+batch検知, alert dedup, source traceability
-> Total DTs: 197 (94 original + 35 R1 + 17 R2 + 14 R3 + 37 R4)。全P0完了。
-> 残り未解決: P1 2件 (DT-184 last_used_at alerting, DT-192 N+1 loop) + P2 2件。
+> **Round 5**: adversarial design review → DT-198~DT-243 (46件新規、5件 overlap)。
+> → P0 9件は即時修正対象。P1 22件、P2 15件をバックログ追加。
+> Total DTs: 243 (94 original + 35 R1 + 17 R2 + 14 R3 + 37 R4 + 46 R5)。
+> Round 1〜4 のP0は完了。Round 5 で新規P0が再度発生。
+> 既知 carry-over: DT-184, DT-192, DT-196, DT-197 は継続。
 > ⚠️ 注: これは**設計クローズ** (spec/schema/scaffolding) であり、**runtime検証**はまだ。
 > migration適用・実装・E2Eテストによる動作検証が次フェーズ。
 >
@@ -210,6 +213,52 @@
 | DT-158 | ~~P1~~ ✅ | UX | ~~未分類サブスク状態 (UX-R3-003)~~ **設計決定 (2026-03-15 R3)**: 自動検知サブスク = デフォルト信頼。即 projection に含める (is_active=true)。Push通知で「検知しました」→ 放置=OK、[違います]→is_active=false。新カラム不要。誤検知=支出多め=安全側の誤り (fail-safe)。検知漏れの方が Design Principle #1 違反 | 完了 | `docs/deep-dive/04-subscription-detection.md` |
 | DT-159 | ~~P1~~ ✅ | 予測 | ~~複数口座の income 除外が口座単位でない (PROJ-R3-002)~~ **設計修正 (2026-03-15 R3)**: Account-Scoped Cashflow Model 導入。`projected_incomes.bank_account_id` + `financial_accounts.settlement_account_id` 追加。per-account timeline 計算 → aggregate は派生。WARNING (口座単体0割れ、移動で解決可) / CRITICAL (合計0割れ) の4段階status | 完了 | `DESIGN.md`, `docs/deep-dive/05-projection-engine.md:§4` |
 | DT-160 | ~~P1~~ ✅ | UX | ~~Push通知の日次キャップ (UX-R3-006)~~ **設計決定 (2026-03-15 R3)**: ユーザー設定可能 4段階 (least/less/medium/full)。medium=デフォルト(3件/日)。quiet hours 23:00-07:00 JST。CRITICAL+broken_connectionは全レベルbypass。`users.notification_level` 追加 | 完了 | `DESIGN.md`, `docs/deep-dive/05-projection-engine.md:§6` |
+| DT-198 | P0 即対応 | Security | **users.tier のデフォルト値が Owner (3)** | `users.tier DEFAULT 0` + `CHECK (tier BETWEEN 0 AND 3)` が migration に反映されている | `supabase/migrations/20260317000002_tables.sql` |
+| DT-199 | P0 即対応 | Security | **users RLS の `FOR ALL` が self-tier-escalation を許す** | `SELECT`/`UPDATE` を分離した policy と、service_role 以外の tier 変更を拒否する BEFORE UPDATE trigger が定義されている | `supabase/migrations/20260317000005_rls.sql` |
+| DT-200 | P0 即対応 | Security | **`transactions.account_id` / `subscriptions.account_id` の所有権 IDOR 防止 trigger 不足** | 両テーブルで `account_id` が同一 `user_id` 所有口座のみ参照可能であることを強制する trigger が定義されている | `supabase/migrations/20260317000002_tables.sql`, `supabase/migrations/20260317000005_rls.sql` |
+| DT-201 | P0 即対応 | 予測 | **variable costs が projection に未接続** | `estimateVariableCosts()` が定義され、`monthly_summaries.avg(variable_costs + uncategorized)` を使って `buildTimeline` に反映される | `docs/deep-dive/05-projection-engine.md` |
+| DT-202 | P0 即対応 | 予測 | **`fixed_cost_items` に `account_id` がなく口座別ルーティング不能** | `fixed_cost_items.account_id` が追加され、未設定項目が aggregate で二重計上されない filter ルールが確定している | `supabase/migrations/20260317000002_tables.sql`, `docs/deep-dive/05-projection-engine.md` |
+| DT-203 | P0 即対応 | XDOC | **`projection-response.schema.json` の `status` enum が実装と不整合** | `SETUP_REQUIRED / SAFE / WARNING / CRITICAL` の4値 uppercase enum に更新され、top-level required に含まれている | `docs/contracts/projection-response.schema.json` |
+| DT-204 | P0 即対応 | XDOC | **`projection-response.schema.json` に主要 projection fields 欠落** | `account_projections`, `aggregate_balance`, `aggregate_timeline`, `aggregate_balance_bars`, `danger_zones`, `status`, `stale_sources` が Projection interface と整合している | `docs/contracts/projection-response.schema.json`, `docs/deep-dive/05-projection-engine.md` |
+| DT-205 | P0 即対応 | Ops | **Dead Man's Switch 自体の死活監視がない** | DMS の最終成功時刻を24時間以内で監視する外部ヘルスチェック (Edge Function か third-party monitor) が設計に追加されている | `supabase/migrations/20260317000007_cron_jobs.sql`, `DESIGN.md` |
+| DT-206 | P0 即対応 | Ops | **`pg_net` fire-and-forget により cron 失敗が不可視** | 各 Edge Function が success marker を書き込み、DMS が freshness を検証する heartbeat パターンが定義されている | `supabase/migrations/20260317000007_cron_jobs.sql`, `DESIGN.md` |
+| DT-207 | P1 | Security | **OIDC JWT の `iat` / `nbf` 検証不足** | Pub/Sub OIDC 検証仕様に `iat` / `nbf` の許容スキューと fail-closed 動作が明文化されている | `docs/deep-dive/02-gmail-integration.md`, `supabase/functions/handle-email-webhook/index.ts` |
+| DT-208 | P1 | Security | **JWT `email` claim を Pub/Sub service account と照合していない** | `email` / `email_verified` / service account 一致条件が webhook 検証仕様に統合されている | `docs/deep-dive/02-gmail-integration.md` |
+| DT-209 | P1 | Security | **`service_role_key` が pg_cron SQL / pg_net ログへ露出しうる** | cron からの内部呼び出し認証を service_role 依存から切り離し、ログ露出しないシークレット経路に置換する方針が確定している | `supabase/migrations/20260317000007_cron_jobs.sql`, `DESIGN.md` |
+| DT-210 | P1 | Security | **`claimMessageId` が DB エラー時に fail-open する** | DB 例外時は `new` 扱いせず retryable error / alert に倒す制御が定義されている | `supabase/functions/handle-email-webhook/index.ts`, `docs/deep-dive/02-gmail-integration.md` |
+| DT-211 | P1 | Security | **LLM 出力を `JSON.parse` のみで受理している** | LLM 出力に schema validation を必須化し、検証失敗時の fail-closed 処理と監査ログが定義されている | `docs/deep-dive/01-email-parser.md`, `docs/deep-dive/05-projection-engine.md` |
+| DT-212 | P1 | Security | **`email_connections.email_address` が平文保存** | 保存要否、暗号化/ハッシュ化方針、表示用マスキング、削除フローが確定している | `DESIGN.md`, `supabase/migrations/20260317000002_tables.sql` |
+| DT-213 | P1 | 予測 | **`todayStr` の JST 変換が `toISOString()` 往復で脆い** | `Asia/Tokyo` 明示の date utility に統一し、UTC round-trip を禁止する規約が 05-projection-engine に反映されている | `docs/deep-dive/05-projection-engine.md` |
+| DT-214 | P1 | 予測 | **未設定カード1枚で projection 全体が `SETUP_REQUIRED` になる** | 未設定カードは partial degraded として扱い、全体 projection を止めずに不足分だけ明示する仕様が確定している | `docs/deep-dive/05-projection-engine.md` |
+| DT-215 | P1 | 予測 | **`minBar.balance` が存在しないフィールドを参照している** | `min_projected_balance` の算出元フィールドが actual schema/interface と一致している | `docs/deep-dive/05-projection-engine.md`, `docs/contracts/projection-response.schema.json` |
+| DT-216 | P1 | 予測 | **`amount >= 30000` 閾値で低所得ユーザーの payday 検知を落とす** | payday 推定閾値が固定金額ではなくユーザー履歴相対値ベースに置換されている | `docs/deep-dive/05-projection-engine.md` |
+| DT-217 | P1 | 予測 | **`computeNextBilling` が検知時刻基準で請求日を固定する** | 課金サイクル推定が transaction date / observed billing date 起点で定義されている | `docs/deep-dive/04-subscription-detection.md`, `docs/deep-dive/05-projection-engine.md` |
+| DT-218 | P1 | 予測 | **カード締め期間境界が UTC midnight 基準** | 締め日・請求日・期間境界がすべて JST midnight 基準で統一されている | `docs/deep-dive/05-projection-engine.md` |
+| DT-219 | P1 | UX | **bootstrap 時のサブスク金額推定が最古トランザクション額固定** | 価格改定を反映できるよう、bootstrap 時は最新額または複数回観測の代表値を採用する仕様が定義されている | `docs/deep-dive/04-subscription-detection.md` |
+| DT-220 | P1 | UX | **未設定カードの利用額が projection から丸ごと脱落する** | 未設定カードでも safety-side の暫定支出見積りを projection に含めるルールが定義されている | `docs/deep-dive/05-projection-engine.md` |
+| DT-221 | P1 | UX | **Pub/Sub fallback polling cron が設計にあるのに cron SQL にない** | fallback polling job の起動条件・頻度・停止条件が cron 定義に反映されている | `docs/deep-dive/02-gmail-integration.md`, `supabase/migrations/20260317000007_cron_jobs.sql` |
+| DT-222 | P1 | UX | **bootstrap で止まった接続を DMS が検知できない (`last_synced_at IS NULL`)** | bootstrap 未完了接続専用の stale 条件と alert ルールが DMS に追加されている | `supabase/migrations/20260317000007_cron_jobs.sql`, `DESIGN.md` |
+| DT-223 | P1 | UX | **`fixed_cost_items.next_billing_at` を進める cron がなく、請求日後に固定費が消える** | fixed cost 向けの advancement job か同等の date advancement 仕様が定義されている | `DESIGN.md`, `docs/deep-dive/05-projection-engine.md` |
+| DT-224 | P1 | XDOC | **`_shared/api.ts` の ErrorCode 列挙が不足している** | shared types と public API docs の error code 列挙が一貫している | `supabase/functions/_shared/api.ts`, `docs/deep-dive/07-public-api.md` |
+| DT-225 | P1 | XDOC | **`ProactiveInboxProactiveInboxCrawlRequest` 型名重複** | request/response 型名が deep-dive, 実装, shared types で一貫している | `supabase/functions/proactive-inbox-crawl/index.ts`, `docs/deep-dive/02-gmail-integration.md` |
+| DT-226 | P1 | XDOC | **cron が `update-projection` / `nudge-balance-update` を呼ぶが実体定義が曖昧** | 呼び出し先 Edge Function 名・存在有無・責務が docs と cron SQL で完全一致している | `supabase/migrations/20260317000007_cron_jobs.sql`, `DESIGN.md` |
+| DT-227 | P1 | Ops | **`claimMessageId` の `.update()` が `count:'exact'` なしで常に retry 判定になる** | claim ロジックの戻り値判定条件が Supabase API 仕様と一致し、retry 誤判定が起きないことが設計に明記されている | `supabase/functions/handle-email-webhook/index.ts` |
+| DT-228 | P1 | Ops | **webhook handler と `renew-gmail-watch` 間で OAuth token refresh race がある** | token refresh の single-flight / compare-and-swap / version check のいずれかで競合回避方式が確定している | `docs/deep-dive/02-gmail-integration.md`, `supabase/functions/renew-gmail-watch/index.ts` |
+| DT-229 | P2 | Security | **JWT / webhook replay hardening の追加検討** | replay 耐性強化案の採否とコストが整理され、Phase 5+ に編入されている | `docs/deep-dive/02-gmail-integration.md` |
+| DT-230 | P2 | Security | **webhook / cron 系シークレットのローテーション監査強化** | ローテーション周期・監査ログ・切替手順が定義されている | `DESIGN.md` |
+| DT-231 | P2 | Security | **長期セキュリティ監査ログ粒度の追加** | セキュリティイベントの保持粒度と retention が設計されている | `DESIGN.md` |
+| DT-232 | P2 | Security | **PII 最小化の追加余地 (`email_address` 非保持運用)** | email address 非保持でも運用可能かの設計判断が完了している | `DESIGN.md` |
+| DT-233 | P2 | UX | **projection の confidence / uncertainty 表示強化** | confidence 表示の有無、見せ方、閾値が UI 仕様に反映されている | `docs/ui/prototypes/ProjectionViewPrototype.swift`, `docs/deep-dive/05-projection-engine.md` |
+| DT-234 | P2 | UX | **カード未設定時の guided recovery UX 強化** | 設定導線、再計算、復帰確認までの導線が UI 仕様として確定している | `docs/ui/prototypes/ProjectionViewPrototype.swift` |
+| DT-235 | P2 | UX | **通知 explainability の改善** | アラートが「なぜそう出たか」を示す根拠表現ルールが定義されている | `docs/deep-dive/05-projection-engine.md`, `DESIGN.md` |
+| DT-236 | P2 | 予測 | **projection 感度分析 / what-if 検討** | 固定費・変動費・収入遅延の感度分析をどこまで扱うかが整理されている | `docs/deep-dive/05-projection-engine.md` |
+| DT-237 | P2 | 予測 | **variable cost 学習方式の高度化** | moving average 以外の学習方式の採否が整理されている | `docs/deep-dive/05-projection-engine.md` |
+| DT-238 | P2 | 予測 | **サブスク金額変動の自動追跡高度化** | price increase / coupon / trial 終了検知の高度化方針が決まっている | `docs/deep-dive/04-subscription-detection.md` |
+| DT-239 | P2 | Ops | **DMS 監視の外部依存性評価** | third-party monitor 採用有無、冗長化、コストが整理されている | `DESIGN.md` |
+| DT-240 | P2 | Ops | **cron heartbeat の保存先 / retention 最適化** | heartbeat テーブルの retention・集計方法・アラート閾値が設計されている | `DESIGN.md` |
+| DT-241 | P2 | Ops | **token refresh race の実測監視追加** | refresh 競合の検知メトリクスと alert 条件が定義されている | `docs/deep-dive/02-gmail-integration.md` |
+| DT-242 | P2 | XDOC | **schema / docs / shared types の自動 drift 検知** | schema / docs / TypeScript type の差分検知フローが CI に組み込まれている | `docs/contracts/projection-response.schema.json`, `supabase/functions/_shared/api.ts` |
+| DT-243 | P2 | Ops | **cron / Edge Function inventory の単一正典化** | cron から呼ぶ関数一覧の正典ドキュメントが1箇所に固定されている | `DESIGN.md`, `supabase/migrations/20260317000007_cron_jobs.sql` |
 
 ## 3. 直近で着手すべき順序 (推奨)
 
@@ -239,13 +288,18 @@
 20. `DT-084`〜`DT-085` Vault API契約・RLSバイパス構造リスク
 21. `DT-009`〜`DT-014` 能動クロール
 22. `DT-030`〜`DT-032` 監査・パフォーマンス・クォータ
+23. `DT-207`〜`DT-212` OIDC/JWT強化、fail-open排除、LLM schema validation、PII最小化
+24. `DT-213`〜`DT-218` 予測エンジンの JST 一貫性、variable cost 以外の精度欠陥、請求日算出見直し
+25. `DT-219`〜`DT-223` 未設定カードの degraded UX、bootstrap/DMS 穴、fixed cost date advancement
+26. `DT-224`〜`DT-226` cross-doc drift (error codes、型名、cron→Edge Function inventory)
+27. `DT-227`〜`DT-228` claimMessageId 判定と token refresh race の運用健全化
 
 ### Tier D: 精度改善・将来対応
-23. `DT-015`〜`DT-018` 精度改善・検証設計
-24. `DT-023`〜`DT-026` 収入予測の詳細化
-25. `DT-019`〜`DT-021`, `DT-027` Phase 5+ 計画に編入
-26. `DT-072` オフラインキャッシュ (SwiftData)
-27. `DT-081`, `DT-086` 契約オプショナリティ・マジック文字列
+28. `DT-015`〜`DT-018` 精度改善・検証設計
+29. `DT-023`〜`DT-026` 収入予測の詳細化
+30. `DT-019`〜`DT-021`, `DT-027` Phase 5+ 計画に編入
+31. `DT-072` オフラインキャッシュ (SwiftData)
+32. `DT-081`, `DT-086`, `DT-229`〜`DT-243` 契約自動検証・監視高度化・将来対応
 
 ## 4. 既知の実装雛形との対応
 
@@ -311,3 +365,73 @@ DT-159 (Account-Scoped Cashflow Model) 導入後の5観点再レビュー。
 | DT-195 (OPS-R4-005) | OCR handler が projection を sync await — timeout cascade ✅ (fire-and-forget に修正済み) |
 | DT-196 (OPS-R4-006) | Subscription 検知と Push が非アトミック |
 | DT-197 (PROJ-R4-005) | 電子マネー (etc_card) チャージ二重計上 — Phase 1 では bank+credit_card のみなので不要。etc_card 追加時に対応 |
+
+## 5. Round 5 レビュー結果 (DT-198~)
+
+adversarial design review の統合結果。5件は既存DTまたは同Round内の親課題と重複のため、新規採番せずに関連DTへ統合。
+
+### P0 (即時修正対象)
+
+| ID | Issue | Fix |
+|----|-------|-----|
+| DT-198 (SEC-R5-001) | `users.tier DEFAULT 3` により新規ユーザーが Owner 扱いになる | `DEFAULT 0` + `CHECK (tier BETWEEN 0 AND 3)` に修正 |
+| DT-199 (SEC-R5-002) | `users` RLS `FOR ALL USING (id = auth.uid())` が self-tier-escalation を許す | `SELECT`/`UPDATE` policy 分離 + service_role 以外の tier 変更を拒否する trigger を追加 |
+| DT-200 (SEC-R5-003) | `transactions.account_id` に所有権検証がなく IDOR | `check_settlement_account_ownership` と同等の ownership trigger を追加し、`subscriptions.account_id` にも適用 |
+| DT-201 (PROJ-R5-001) | variable costs が projection に実質未実装 | `estimateVariableCosts()` を定義し、`monthly_summaries` 平均から `buildTimeline` に接続 |
+| DT-202 (PROJ-R5-003) | `fixed_cost_items` に `account_id` がなく aggregate で二重計上される | `account_id` カラム追加 + unrouted/direct debit filter を排他的に修正 |
+| DT-203 (XDOC-R5-002) | `projection-response.schema.json` の `status` enum が engine と不整合 | 4値 uppercase enum に更新し top-level required に追加 |
+| DT-204 (XDOC-R5-003) | `projection-response.schema.json` に major fields が欠落 | Projection interface 相当の major fields を schema に追加 |
+| DT-205 (OPS-R5-002) | Dead Man's Switch に monitor-the-monitor がない | DMS 最終成功時刻を24h以内で検証する外部 health check を追加 |
+| DT-206 (OPS-R5-003) | `pg_net` HTTP が fire-and-forget で cron 失敗が見えない | 各 Edge Function が success marker を書き、DMS が freshness を監視する heartbeat 方式に変更 |
+
+### P1 (未修正 — 実装フェーズで対応)
+
+| ID | Issue |
+|----|-------|
+| DT-207 (SEC-R5-005) | OIDC JWT の `iat` / `nbf` 検証不足 |
+| DT-208 (SEC-R5-006) | JWT `email` claim を Pub/Sub service account と照合していない |
+| DT-209 (SEC-R5-007) | `service_role_key` が pg_cron SQL / pg_net ログへ露出しうる |
+| DT-210 (SEC-R5-009) | `claimMessageId` が DB エラー時に fail-open する |
+| DT-211 (SEC-R5-014) | LLM 出力を schema validation せず `JSON.parse` だけで受理している |
+| DT-212 (SEC-R5-016) | `email_connections.email_address` が平文保存 |
+| DT-213 (PROJ-R5-002) | `todayStr` の JST 変換が `toISOString()` 往復で脆い |
+| DT-214 (PROJ-R5-004) | 未設定カード1枚で projection 全体が `SETUP_REQUIRED` になる |
+| DT-215 (PROJ-R5-005) | `minBar.balance` が存在しないフィールドを参照し、`min_projected_balance` が壊れる |
+| DT-216 (PROJ-R5-006) | `amount >= 30000` 閾値で低所得ユーザーの payday 検知を落とす |
+| DT-217 (PROJ-R5-007) | `computeNextBilling` が transaction date ではなく検知時刻に anchor している |
+| DT-218 (PROJ-R5-008) | カード締め期間境界が UTC midnight 基準 |
+| DT-219 (UX-R5-002) | bootstrap サブスク検知が最古トランザクション額を採用し、価格改定を落とす |
+| DT-220 (UX-R5-003) | 未設定カードの利用額が projection から丸ごと脱落する |
+| DT-221 (UX-R5-007) | Pub/Sub fallback polling cron が設計にあるのに cron SQL にない |
+| DT-222 (UX-R5-008) | bootstrap で止まった接続を DMS が検知できない (`last_synced_at IS NULL`) |
+| DT-223 (UX-R5-015) | `fixed_cost_items.next_billing_at` を進める cron がなく、請求日後に固定費が消える |
+| DT-224 (XDOC-R5-007) | `_shared/api.ts` の ErrorCode 列挙が不足している |
+| DT-225 (XDOC-R5-008) | `ProactiveInboxProactiveInboxCrawlRequest` 型名重複 |
+| DT-226 (XDOC-R5-015) | cron が `update-projection` / `nudge-balance-update` を呼ぶが実体定義が曖昧 |
+| DT-227 (OPS-R5-004) | `claimMessageId` の `.update()` が `count:'exact'` なしで常に retry 判定になる |
+| DT-228 (OPS-R5-008) | webhook handler と `renew-gmail-watch` 間で OAuth token refresh race がある |
+| DT-200 と重複 (SEC-R5-004) | `subscriptions.account_id` IDOR trigger missing は DT-200 に統合 |
+| DT-203 と重複 (PROJ-R5-009) | schema.json vs engine status enum mismatch は DT-203 に統合 |
+| DT-202 と重複 (PROJ-R5-011) | `fixed_cost_items` aggregate 二重計上は DT-202 に統合 |
+| DT-080 と重複 (UX-R5-004) | UI spec に `data_as_of` / `is_stale` / `stale_sources` 参照がない問題は既存 DT-080 で継続管理 |
+| DT-052 / DT-191 と重複 (XDOC-R5-016) | `computeNextBilling()` の UTC `.toISOString()` は既存 JST 規約 / next billing 論点に包含 |
+
+### P2 (将来対応)
+
+| ID | Issue |
+|----|-------|
+| DT-229 (SEC-R5-008) | JWT / webhook replay hardening の追加検討 |
+| DT-230 (SEC-R5-010) | webhook / cron 系シークレットのローテーション監査強化 |
+| DT-231 (SEC-R5-012) | 長期セキュリティ監査ログ粒度の追加 |
+| DT-232 (SEC-R5-015) | PII 最小化の追加余地 (`email_address` 非保持運用) |
+| DT-233 (UX-R5-011) | projection の confidence / uncertainty 表示強化 |
+| DT-234 (UX-R5-012) | カード未設定時の guided recovery UX 強化 |
+| DT-235 (UX-R5-014) | 通知 explainability の改善 |
+| DT-236 (PROJ-R5-012) | projection 感度分析 / what-if 検討 |
+| DT-237 (PROJ-R5-013) | variable cost 学習方式の高度化 |
+| DT-238 (PROJ-R5-014) | サブスク金額変動の自動追跡高度化 |
+| DT-239 (OPS-R5-005) | DMS 監視の外部依存性評価 |
+| DT-240 (OPS-R5-006) | cron heartbeat の保存先 / retention 最適化 |
+| DT-241 (OPS-R5-012) | token refresh race の実測監視追加 |
+| DT-242 (OPS-R5-013) | schema / docs / shared types の自動 drift 検知 |
+| DT-243 (OPS-R5-016) | cron / Edge Function inventory の単一正典化 |

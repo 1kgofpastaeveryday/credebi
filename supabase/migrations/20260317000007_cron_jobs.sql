@@ -4,6 +4,16 @@
 -- Requires: app.supabase_url and app.service_role_key DB parameters
 -- ============================================================
 
+-- Seed heartbeat expectations. Edge Functions must update last_success_at by calling
+-- record_system_heartbeat(...) only after a successful run.
+INSERT INTO system_heartbeats (job_name, expected_interval, details)
+VALUES
+  ('detect-broken-connections', INTERVAL '12 hours', '{"owner":"pg_cron","kind":"dead_mans_switch"}'::jsonb),
+  ('renew-gmail-watches', INTERVAL '24 hours', '{"owner":"edge_function","kind":"heartbeat_required"}'::jsonb),
+  ('update-projection', INTERVAL '24 hours', '{"owner":"edge_function","kind":"heartbeat_required"}'::jsonb),
+  ('nudge-balance-update', INTERVAL '24 hours', '{"owner":"edge_function","kind":"heartbeat_required"}'::jsonb)
+ON CONFLICT (job_name) DO NOTHING;
+
 -- TTL cleanup: processed_webhook_messages (7日超)
 SELECT cron.schedule(
   'cleanup-processed-webhook-messages',
@@ -40,6 +50,9 @@ SELECT cron.schedule(
 );
 
 -- Gmail watch renewal (daily)
+-- Heartbeat contract: renew-gmail-watch Edge Function must call
+--   SELECT record_system_heartbeat('renew-gmail-watches', INTERVAL '24 hours');
+-- after a successful end-to-end run. pg_net dispatch alone is not success.
 SELECT cron.schedule(
   'renew-gmail-watches',
   '0 2 * * *',
@@ -51,6 +64,9 @@ SELECT cron.schedule(
 );
 
 -- Monthly summaries update (daily)
+-- Heartbeat contract: update-projection Edge Function must call
+--   SELECT record_system_heartbeat('update-projection', INTERVAL '24 hours');
+-- after a successful fan-out / completion pass.
 SELECT cron.schedule(
   'update-monthly-summaries',
   '30 3 * * *',
@@ -169,6 +185,9 @@ SELECT cron.schedule(
 );
 
 -- Bank balance update nudge (payday翌日にPush)
+-- Heartbeat contract: nudge-balance-update Edge Function must call
+--   SELECT record_system_heartbeat('nudge-balance-update', INTERVAL '24 hours');
+-- on success so pg_net fire-and-forget failures are externally visible.
 SELECT cron.schedule(
   'nudge-balance-update',
   '0 0 * * *',
@@ -184,6 +203,14 @@ SELECT cron.schedule(
   'detect-broken-connections',
   '0 */12 * * *',
   $$
+  SELECT record_system_heartbeat(
+    'detect-broken-connections',
+    INTERVAL '12 hours',
+    now(),
+    'ok',
+    jsonb_build_object('source', 'pg_cron')
+  );
+
   -- Part 1: Email connections (stale sync OR expired watch)
   WITH broken_email AS (
     UPDATE email_connections
@@ -243,4 +270,24 @@ SELECT cron.schedule(
   'cleanup-rate-limit-counters',
   '*/10 * * * *',
   $$DELETE FROM rate_limit_counters WHERE created_at < now() - INTERVAL '10 minutes'$$
+);
+
+-- DT-205/206: Heartbeat freshness monitor (every 30 minutes)
+SELECT cron.schedule(
+  'check-heartbeat-freshness',
+  '*/30 * * * *',
+  $$
+  INSERT INTO system_alerts (user_id, alert_type, message, created_at)
+  SELECT NULL, 'stale_heartbeat',
+         'Cron job ' || h.job_name || ' last succeeded at ' || h.last_success_at::text,
+         now()
+  FROM system_heartbeats h
+  WHERE h.last_success_at < now() - h.expected_interval * 2
+    AND NOT EXISTS (
+      SELECT 1 FROM system_alerts sa
+      WHERE sa.alert_type = 'stale_heartbeat'
+        AND sa.message LIKE '%' || h.job_name || '%'
+        AND sa.created_at > now() - h.expected_interval
+    );
+  $$
 );

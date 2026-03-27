@@ -2,18 +2,25 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://credebi.com/schemas/projection-response.schema.json",
   "title": "ProjectionResponse",
-  "description": "Projection API response contract for balance bars and charge coverages.",
+  "description": "Projection API response contract aligned with calculateProjection output (Projection interface) plus compatibility aliases.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "generated_at",
+    "status",
     "data_as_of",
     "is_stale",
+    "stale_sources",
     "timezone",
     "horizon_days",
     "currency",
+    "aggregate_balance",
+    "aggregate_timeline",
+    "aggregate_balance_bars",
+    "account_projections",
     "balance_bars",
     "charge_coverages",
+    "danger_zones",
     "summary"
   ],
   "properties": {
@@ -22,30 +29,34 @@
       "format": "date-time",
       "description": "Server-side generation timestamp."
     },
+    "status": {
+      "$ref": "#/$defs/projectionStatus"
+    },
     "data_as_of": {
       "type": "string",
       "format": "date-time",
-      "description": "DT-033: Timestamp of the most recent upstream data (MIN of email last_synced_at, income last sync, etc). If significantly older than generated_at, the projection is based on stale data."
+      "description": "Oldest upstream source update timestamp used by this projection."
     },
     "is_stale": {
       "type": "boolean",
-      "description": "DT-033: true if now() - data_as_of > staleness_threshold. UI must show degraded display when true."
+      "description": "True when one or more projection inputs are stale."
     },
     "stale_sources": {
       "type": "array",
-      "items": { "type": "string" },
-      "description": "DT-033: List of upstream sources that are stale (e.g. ['gmail:vpass', 'freee']). Empty if is_stale=false."
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Stale-source identifiers (e.g. bank_balance:楽天銀行, income_account_unknown)."
     },
     "timezone": {
       "type": "string",
-      "minLength": 1,
-      "description": "Applied timezone for date bucketing."
+      "minLength": 1
     },
     "horizon_days": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 120,
-      "description": "Forecast horizon in days."
+      "maximum": 120
     },
     "currency": {
       "type": "string",
@@ -53,12 +64,34 @@
         "JPY"
       ]
     },
-    "balance_bars": {
+    "aggregate_balance": {
+      "type": "number",
+      "description": "Current combined balance across all bank accounts."
+    },
+    "aggregate_timeline": {
       "type": "array",
-      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/timelineEvent"
+      }
+    },
+    "aggregate_balance_bars": {
+      "type": "array",
       "items": {
         "$ref": "#/$defs/balanceBar"
       }
+    },
+    "account_projections": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/accountProjection"
+      }
+    },
+    "balance_bars": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/balanceBar"
+      },
+      "description": "Compatibility alias for aggregate_balance_bars used by legacy UI contracts."
     },
     "charge_coverages": {
       "type": "array",
@@ -66,11 +99,106 @@
         "$ref": "#/$defs/cardChargeCoverage"
       }
     },
+    "danger_zones": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/dangerZone"
+      }
+    },
     "summary": {
-      "$ref": "#/$defs/summary"
+      "$ref": "#/$defs/projectionSummary"
     }
   },
   "$defs": {
+    "projectionStatus": {
+      "type": "string",
+      "enum": [
+        "SETUP_REQUIRED",
+        "SAFE",
+        "WARNING",
+        "CRITICAL"
+      ]
+    },
+    "timelineEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "date",
+        "type",
+        "bank_account_id",
+        "description",
+        "amount",
+        "running_balance"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "income",
+            "card_charge",
+            "fixed_cost",
+            "variable_cost"
+          ]
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional related account id (e.g. credit card id for card_charge)."
+        },
+        "bank_account_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "amount": {
+          "type": "number",
+          "description": "Signed amount in JPY. Positive=inflow, negative=outflow."
+        },
+        "running_balance": {
+          "type": "number",
+          "description": "Per-account running balance after this event."
+        }
+      }
+    },
+    "dangerZone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "date",
+        "shortfall",
+        "cause",
+        "suggestion"
+      ],
+      "properties": {
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "shortfall": {
+          "type": "number"
+        },
+        "cause": {
+          "type": "string",
+          "minLength": 1
+        },
+        "suggestion": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
     "balanceBar": {
       "type": "object",
       "additionalProperties": false,
@@ -97,88 +225,76 @@
           ]
         },
         "start_balance": {
-          "type": "integer",
-          "description": "Balance at start of day."
+          "type": "number"
         },
         "end_balance": {
-          "type": "integer",
-          "description": "Balance at end of day."
+          "type": "number"
         },
         "inflow": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Total inflow for the day."
+          "type": "number",
+          "minimum": 0
         },
         "outflow": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Total outflow for the day (absolute value)."
+          "type": "number",
+          "minimum": 0
         },
         "below_zero": {
-          "type": "boolean",
-          "description": "True when end_balance < 0."
+          "type": "boolean"
         },
         "trigger_event_ids": {
           "type": "array",
-          "description": "Event IDs that pushed the balance below zero on this day.",
-          "uniqueItems": true,
           "items": {
             "type": "string",
             "minLength": 1
-          }
-        },
-        "daily_breakdown": {
-          "$ref": "#/$defs/dailyBreakdown"
+          },
+          "uniqueItems": true
         }
       }
     },
-    "cashflowItem": {
+    "accountProjection": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "id",
-        "label",
-        "amount"
+        "account_id",
+        "account_name",
+        "current_balance",
+        "timeline",
+        "balance_bars",
+        "danger_zones",
+        "is_safe"
       ],
       "properties": {
-        "id": {
+        "account_id": {
           "type": "string",
           "minLength": 1
         },
-        "label": {
+        "account_name": {
           "type": "string",
           "minLength": 1
         },
-        "amount": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Absolute amount in JPY."
+        "current_balance": {
+          "type": "number"
         },
-        "note": {
-          "type": "string",
-          "minLength": 1
-        }
-      }
-    },
-    "dailyBreakdown": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "income_items",
-        "spend_items"
-      ],
-      "properties": {
-        "income_items": {
+        "timeline": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/cashflowItem"
+            "$ref": "#/$defs/timelineEvent"
           }
         },
-        "spend_items": {
+        "balance_bars": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/cashflowItem"
+            "$ref": "#/$defs/balanceBar"
           }
+        },
+        "danger_zones": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/dangerZone"
+          }
+        },
+        "is_safe": {
+          "type": "boolean"
         }
       }
     },
@@ -193,12 +309,13 @@
         "balance_before",
         "balance_after",
         "shortfall",
-        "is_funded"
+        "is_funded",
+        "utilization"
       ],
       "properties": {
         "card_id": {
           "type": "string",
-          "format": "uuid"
+          "minLength": 1
         },
         "card_name": {
           "type": "string",
@@ -209,30 +326,32 @@
           "format": "date"
         },
         "charge_amount": {
-          "type": "integer",
+          "type": "number",
           "minimum": 0
         },
         "balance_before": {
-          "type": "integer"
+          "type": "number"
         },
         "balance_after": {
-          "type": "integer"
+          "type": "number"
         },
         "shortfall": {
-          "type": "integer",
+          "type": "number",
           "minimum": 0
         },
         "is_funded": {
           "type": "boolean"
         },
-        "cause_event_id": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Optional timeline event ID for UI deep-link."
+        "utilization": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
         }
       }
     },
-    "summary": {
+    "projectionSummary": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -241,41 +360,30 @@
         "first_deficit_date",
         "first_deficit_shortfall",
         "funded_charges",
-        "unfunded_charges"
+        "unfunded_charges",
+        "min_projected_balance",
+        "pre_payday_balance"
       ],
       "properties": {
         "safety_status": {
-          "type": "string",
-          "enum": [
-            "safe",
-            "warning"
-          ],
-          "description": "Binary status for low-cognitive UI. 'warning' means balance dips below zero at least once."
+          "$ref": "#/$defs/projectionStatus"
         },
         "projected_end_balance": {
-          "type": "integer"
+          "type": "number"
         },
         "first_deficit_date": {
-          "anyOf": [
-            {
-              "type": "string",
-              "format": "date"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
         },
         "first_deficit_shortfall": {
-          "anyOf": [
-            {
-              "type": "integer",
-              "minimum": 0
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
         },
         "funded_charges": {
           "type": "integer",
@@ -284,16 +392,98 @@
         "unfunded_charges": {
           "type": "integer",
           "minimum": 0
+        },
+        "min_projected_balance": {
+          "type": "number"
+        },
+        "pre_payday_balance": {
+          "type": [
+            "number",
+            "null"
+          ]
         }
       }
     }
   },
   "examples": [
     {
-      "generated_at": "2026-02-21T13:45:00+09:00",
+      "generated_at": "2026-03-11T22:00:00+09:00",
+      "status": "WARNING",
+      "data_as_of": "2026-03-11T21:30:00+09:00",
+      "is_stale": false,
+      "stale_sources": [],
       "timezone": "Asia/Tokyo",
       "horizon_days": 60,
       "currency": "JPY",
+      "aggregate_balance": 5600,
+      "aggregate_timeline": [
+        {
+          "id": "ev_lifecard_20260327",
+          "date": "2026-03-27",
+          "type": "card_charge",
+          "account_id": "card_lifecard",
+          "bank_account_id": "bank_smbc_main",
+          "description": "ライフカード引き落とし",
+          "amount": -12800,
+          "running_balance": -7200
+        }
+      ],
+      "aggregate_balance_bars": [
+        {
+          "date": "2026-03-27",
+          "phase": "forecast",
+          "start_balance": 5600,
+          "end_balance": -7200,
+          "inflow": 0,
+          "outflow": 12800,
+          "below_zero": true,
+          "trigger_event_ids": [
+            "ev_lifecard_20260327"
+          ]
+        }
+      ],
+      "account_projections": [
+        {
+          "account_id": "bank_smbc_main",
+          "account_name": "三井住友銀行",
+          "current_balance": 5600,
+          "timeline": [
+            {
+              "id": "ev_lifecard_20260327",
+              "date": "2026-03-27",
+              "type": "card_charge",
+              "account_id": "card_lifecard",
+              "bank_account_id": "bank_smbc_main",
+              "description": "ライフカード引き落とし",
+              "amount": -12800,
+              "running_balance": -7200
+            }
+          ],
+          "balance_bars": [
+            {
+              "date": "2026-03-27",
+              "phase": "forecast",
+              "start_balance": 5600,
+              "end_balance": -7200,
+              "inflow": 0,
+              "outflow": 12800,
+              "below_zero": true,
+              "trigger_event_ids": [
+                "ev_lifecard_20260327"
+              ]
+            }
+          ],
+          "danger_zones": [
+            {
+              "date": "2026-03-27",
+              "shortfall": 7200,
+              "cause": "ライフカード引き落とし",
+              "suggestion": "3/27までに口座へ入金してください"
+            }
+          ],
+          "is_safe": false
+        }
+      ],
       "balance_bars": [
         {
           "date": "2026-03-27",
@@ -305,27 +495,12 @@
           "below_zero": true,
           "trigger_event_ids": [
             "ev_lifecard_20260327"
-          ],
-          "daily_breakdown": {
-            "income_items": [],
-            "spend_items": [
-              {
-                "id": "tx_netflix_20260327",
-                "label": "Netflix fee",
-                "amount": 1490
-              },
-              {
-                "id": "tx_food_20260327",
-                "label": "Lunch at Ueno",
-                "amount": 980
-              }
-            ]
-          }
+          ]
         }
       ],
       "charge_coverages": [
         {
-          "card_id": "5fe65448-2860-4f46-b6d6-2f3f0c2d7755",
+          "card_id": "card_lifecard",
           "card_name": "ライフカード",
           "billing_date": "2026-03-27",
           "charge_amount": 12800,
@@ -333,16 +508,26 @@
           "balance_after": -7200,
           "shortfall": 7200,
           "is_funded": false,
-          "cause_event_id": "ev_lifecard_20260327"
+          "utilization": null
+        }
+      ],
+      "danger_zones": [
+        {
+          "date": "2026-03-27",
+          "shortfall": 7200,
+          "cause": "ライフカード引き落とし",
+          "suggestion": "3/27までに口座へ入金してください"
         }
       ],
       "summary": {
-        "safety_status": "warning",
-        "projected_end_balance": 471130,
+        "safety_status": "WARNING",
+        "projected_end_balance": -7200,
         "first_deficit_date": "2026-03-27",
         "first_deficit_shortfall": 7200,
-        "funded_charges": 2,
-        "unfunded_charges": 1
+        "funded_charges": 0,
+        "unfunded_charges": 1,
+        "min_projected_balance": -7200,
+        "pre_payday_balance": -7200
       }
     }
   ]
