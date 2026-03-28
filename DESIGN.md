@@ -596,6 +596,8 @@ CREATE TABLE monthly_summaries (
 --   3. UI: Show "未分類 ¥X" badge when uncategorized > 0, link to categorization flow
 --   4. Projection engine treats uncategorized same as variable_costs (included in burn rate)
 --   5. If uncategorized > 20% of total_expense, show warning "分類されていない取引があります"
+-- DT-044: monthly_summaries の計算失敗検知は heartbeat アーキテクチャ (§6e check-heartbeat-freshness) で対応。
+-- update-projection が record_system_heartbeat() を呼ぶことで、24時間以内に更新がなければ system_alert が発火する。
 
 -- ============================================================
 -- 見込み収入 (予測エンジン入力)
@@ -1613,6 +1615,12 @@ corrupt the database or bypass validation.
 | ETC連携 | - | - | ○ | ○ |
 | 非アクティブ自動解約 | - | ○ | ○ | - |
 
+Email connection limits per tier:
+- Free (tier=0): 1 connection
+- Standard (tier=1): 2 connections
+- Pro (tier=2): 5 connections
+- Owner (tier=3): unlimited
+
 **デフォルト: Tier 3 (Owner)** — 自分専用ツールとして全機能解放
 
 ```text
@@ -2036,7 +2044,7 @@ Credebi/
 | `renew-gmail-watch` | pg_cron (日次) | Gmail watch() の期限更新 |
 | `classify-transaction` | transaction INSERT/UPDATE | LLMでカテゴリ分類 |
 | `detect-subscription` | transaction INSERT | サブスクパターン検知 |
-| `update-projection` | transaction INSERT/UPDATE | 月次サマリ・予測更新 |
+| `update-projection` | pg_cron (日次 03:30 JST) | 全ユーザーの月次サマリ再計算・data_as_of更新 |
 | `send-push` | 内部呼び出し | APNs経由でPush通知送信 |
 | `correlate-transactions` | transaction INSERT | マーチャント/EC通知とカード通知の突合 |
 | `parse-ec-email` | メール受信 (Tier 2+) | EC注文メールをLLMで解析→商品名抽出 |
@@ -2050,6 +2058,8 @@ Credebi/
 | `issue-api-key` | HTTP (JWT only) | APIキー発行 (iOSアプリ内から) |
 | `update-balance-ocr` | HTTP (JWT, multipart) | スクショOCR→銀行残高更新 (EXIF日時判定) |
 | `nudge-balance-update` | pg_cron (日次) | payday翌日に残高更新Push通知 |
+
+**DT-064: 自動分類 cron ジョブは Phase 2 で LLM 統合と同時に実装予定。MVP は手動分類で運用。**
 
 ### デプロイ前提条件チェックリスト (DT-124)
 

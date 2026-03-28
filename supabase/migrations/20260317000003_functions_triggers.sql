@@ -435,3 +435,40 @@ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
 REVOKE EXECUTE ON FUNCTION update_suggestion_stat FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION update_suggestion_stat TO service_role;
+
+-- ============================================================
+-- DT-066: Tier-based email connection limit
+-- Free: 1, Standard: 2, Pro: 5, Owner: unlimited
+-- ============================================================
+CREATE OR REPLACE FUNCTION check_email_connection_limit()
+RETURNS TRIGGER AS $$
+DECLARE
+  user_tier INT;
+  current_count INT;
+  max_allowed INT;
+BEGIN
+  SELECT tier INTO user_tier FROM users WHERE id = NEW.user_id;
+
+  SELECT COUNT(*) INTO current_count
+  FROM email_connections
+  WHERE user_id = NEW.user_id AND is_active = true;
+
+  max_allowed := CASE user_tier
+    WHEN 0 THEN 1   -- Free
+    WHEN 1 THEN 2   -- Standard
+    WHEN 2 THEN 5   -- Pro
+    WHEN 3 THEN 999 -- Owner (effectively unlimited)
+    ELSE 1
+  END;
+
+  IF current_count >= max_allowed THEN
+    RAISE EXCEPTION 'Email connection limit reached for tier % (max: %)', user_tier, max_allowed;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+CREATE TRIGGER trg_check_email_connection_limit
+  BEFORE INSERT ON email_connections
+  FOR EACH ROW EXECUTE FUNCTION check_email_connection_limit();

@@ -720,6 +720,26 @@ Gmail API Quotas:
 実質的にボトルネックにはならない。
 ```
 
+### Gmail API Quota Optimization (DT-032)
+
+2段階フェッチで API quota 消費を 50-80% 削減:
+
+#### Step 1: Metadata-only fetch
+messages.get(format='metadata', metadataHeaders=['From', 'Subject'])
+- API cost: 5 units/request (vs full: 50 units)
+- From/Subject でカード発行元メールかどうか判定
+
+#### Step 2: Full fetch (条件付き)
+From/Subject が既知の card issuer pattern にマッチした場合のみ:
+messages.get(format='full')
+- 本文取得 + パース + LLM 抽出
+
+#### HISTORY_ID_EXPIRED 時の最適化
+q パラメータでフィルタ:
+messages.list(q="newer_than:7d (from:lifecard.co.jp OR from:smbc-card.com OR from:rakuten-card.co.jp)")
+- 全メール取得ではなく、カード関連メールのみに限定
+- Tier別 resyncLimit は維持 (Free:100, Standard:300, Pro:500)
+
 ## 9. Pub/Sub OIDC 認証仕様 (DT-001)
 
 ### 9a. 概要

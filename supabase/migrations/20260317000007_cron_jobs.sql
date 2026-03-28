@@ -11,7 +11,8 @@ VALUES
   ('detect-broken-connections', INTERVAL '12 hours', '{"owner":"pg_cron","kind":"dead_mans_switch"}'::jsonb),
   ('renew-gmail-watches', INTERVAL '24 hours', '{"owner":"edge_function","kind":"heartbeat_required"}'::jsonb),
   ('update-projection', INTERVAL '24 hours', '{"owner":"edge_function","kind":"heartbeat_required"}'::jsonb),
-  ('nudge-balance-update', INTERVAL '24 hours', '{"owner":"edge_function","kind":"heartbeat_required"}'::jsonb)
+  ('nudge-balance-update', INTERVAL '24 hours', '{"owner":"edge_function","kind":"heartbeat_required"}'::jsonb),
+  ('proactive-inbox-crawl', INTERVAL '24 hours', '{"owner":"edge_function","kind":"heartbeat_required"}'::jsonb)
 ON CONFLICT (job_name) DO NOTHING;
 
 -- TTL cleanup: processed_webhook_messages (7日超)
@@ -184,6 +185,21 @@ SELECT cron.schedule(
   $$
 );
 
+-- DT-223: Advance fixed_cost_items.next_billing_at after billing date passes
+SELECT cron.schedule(
+  'advance-fixed-cost-billing-dates',
+  '10 4 * * *',
+  $$UPDATE fixed_cost_items
+    SET next_billing_at = CASE billing_cycle
+      WHEN 'monthly' THEN next_billing_at + INTERVAL '1 month'
+      WHEN 'yearly'  THEN next_billing_at + INTERVAL '1 year'
+      ELSE next_billing_at + INTERVAL '1 month'
+    END,
+    updated_at = now()
+    WHERE is_active = true
+      AND next_billing_at < CURRENT_DATE$$
+);
+
 -- Bank balance update nudge (payday翌日にPush)
 -- Heartbeat contract: nudge-balance-update Edge Function must call
 --   SELECT record_system_heartbeat('nudge-balance-update', INTERVAL '24 hours');
@@ -195,6 +211,20 @@ SELECT cron.schedule(
     url := current_setting('app.supabase_url') || '/functions/v1/nudge-balance-update',
     headers := jsonb_build_object('Authorization', 'Bearer ' || current_setting('app.internal_sync_secret')),
     body := '{}'::jsonb
+  )$$
+);
+
+-- DT-221: Pub/Sub fallback polling (proactive inbox crawl for Tier 2+ users)
+-- Heartbeat contract: proactive-inbox-crawl Edge Function must call
+--   SELECT record_system_heartbeat('proactive-inbox-crawl', INTERVAL '24 hours');
+-- after a successful end-to-end run.
+SELECT cron.schedule(
+  'proactive-inbox-crawl',
+  '0 6 * * *',
+  $$SELECT net.http_post(
+    url := current_setting('app.supabase_url') || '/functions/v1/proactive-inbox-crawl',
+    headers := jsonb_build_object('Authorization', 'Bearer ' || current_setting('app.internal_sync_secret')),
+    body := '{"max_users": 200}'::jsonb
   )$$
 );
 
@@ -220,6 +250,8 @@ SELECT cron.schedule(
       AND (
         last_synced_at < now() - INTERVAL '48 hours'
         OR watch_expiry < now()
+        -- DT-222: Also detect bootstrap-stalled connections (created > 24h ago, bootstrap never completed)
+        OR (bootstrap_completed_at IS NULL AND created_at < now() - INTERVAL '24 hours')
       )
     RETURNING id, user_id, last_synced_at
   )
@@ -241,7 +273,11 @@ SELECT cron.schedule(
     SET is_active = false,
         last_error = COALESCE(last_error, 'stale_sync_48h')
     WHERE is_active = true
-      AND last_synced_at < now() - INTERVAL '48 hours'
+      AND (
+        last_synced_at < now() - INTERVAL '48 hours'
+        -- DT-222: Also detect bootstrap-stalled connections (created > 24h ago, bootstrap never completed)
+        OR (bootstrap_completed_at IS NULL AND created_at < now() - INTERVAL '24 hours')
+      )
     RETURNING id, user_id, last_synced_at
   )
   INSERT INTO system_alerts (user_id, alert_type, message, income_connection_id)

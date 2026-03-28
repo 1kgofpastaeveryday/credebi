@@ -1164,8 +1164,15 @@ UI仕様・プロトタイプ:
 // iOS側: Supabase Realtimeで予測の変更をリアルタイム受信
 
 // monthly_summaries テーブルの変更をサブスクライブ
+
+// DT-054: Channel naming convention
+// - Include user_id to prevent cross-tab/device collision
+// - iOS: unsubscribe in viewWillDisappear
+// - Web: unsubscribe in useEffect cleanup
+// - Dedup: track lastProcessedEventId to avoid double-processing
+
 let subscription = supabase
-  .channel('projection-updates')
+  .channel(`projection:${userId}`)
   .on(
     'postgres_changes',
     {

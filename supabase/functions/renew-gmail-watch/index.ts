@@ -64,6 +64,15 @@ Deno.serve(async (req: Request) => {
     // 2. refresh_token で access_token 更新
     // 3. users.watch を再発行
     // 4. watch_expiry / watch_renewed_at 更新
+    //
+    // Batch strategy (DT-031):
+    // - Chunk connections into batches of 50
+    // - Process each batch with Promise.allSettled (parallel within batch)
+    // - Sequential between batches to avoid Gmail API rate limits
+    // - 1000 users = 20 batches × ~3s/batch = ~60s (within 150s timeout)
+    // - Failed renewals: log to system_alerts, continue with next batch
+    // - Partial success is acceptable: failed watches will be caught by
+    //   detect-broken-connections DMS within 12h
 
     const scanned = dryRun ? 0 : limit;
     return ok(requestId, {
