@@ -330,6 +330,21 @@ async function calculateProjection(userId: string): Promise<Projection> {
   // }
 
   // ── 4. Fixed costs — composition rule (unchanged but now routes to bank account) ──
+  //
+  // Decision 7: Subscription status filtering for projection:
+  //   - 'pending_confirm' → INCLUDED. Design Principle #3 (空振りOK、見逃しNG):
+  //     An unconfirmed subscription that turns out real would be a silent hole if excluded.
+  //     Including a false positive only overestimates expenses (safe direction).
+  //   - 'confirmed'        → INCLUDED. Normal active subscription.
+  //   - 'payment_pending'  → INCLUDED but with reduced confidence annotation.
+  //     The charge hasn't arrived yet but may still come (delayed billing, retry, etc.)
+  //     Excluding it risks a miss if the charge eventually posts.
+  //     Projection output marks these items with confidence: 'low' for UI annotation.
+  //   - 'cancelled'        → EXCLUDED. No longer expected to recur.
+  //
+  // In short: only 'cancelled' is excluded. All other statuses contribute to projection
+  // because the cost of a false negative (missed real charge) far exceeds the cost of
+  // a false positive (overestimated expense that the user can correct).
   const allFixedCosts = await getFixedCosts(userId)
   const creditCardIds = new Set(cardAccounts.data?.map(c => c.id) ?? [])
 
@@ -1314,7 +1329,66 @@ function computeProjectionSummary(projection: Projection): ProjectionSummary {
 └─────────────────────────────────────────┘
 ```
 
-### 10d. 設計判断
+### 10d. Stale Data Display Rules (DT-080) — Design Principle #2 準拠
+
+> **Authoritative UI spec**: データ鮮度の視覚的表現はこのセクションを正とする。
+> Design Principle #2 "Stale Data Must Look Stale" の具体的な実装仕様。
+
+```text
+■ is_stale = false (通常):
+  バナー非表示。ヒーロー数値は通常カラー (SAFE=緑, WARNING=黄, CRITICAL=赤)。
+
+■ is_stale = true (データ古い):
+  ┌─────────────────────────────────────────┐
+  │ ⚠ データが古い可能性があります              │
+  │ 最終更新: {data_as_of からの経過時間}        │
+  │ 原因: {stale_sources を日本語で列挙}         │
+  │ (例: 楽天銀行の残高, Gmail連携)              │
+  └─────────────────────────────────────────┘
+  ヒーロー数値はオレンジ色に変更。
+  SAFE/WARNING/CRITICAL の判定ロジックは変わらないが、
+  数値の色だけオレンジに上書きして「この値は古いかも」を示す。
+
+  stale_sources の表示マッピング:
+    bank_balance:{name}           → "{name}の残高"
+    card_schedule_missing:{name}  → "{name}の設定"
+    income_account_unknown        → "収入情報"
+    resync_gap:{name}             → "メール取得({name})"
+    email_connection              → "Gmail連携"
+    settlement_account_missing:{name} → "{name}の引き落とし口座"
+
+  複数の stale_sources がある場合は読点区切りで列挙:
+    "楽天銀行の残高, Gmail連携"
+
+  経過時間の表示フォーマット:
+    < 1h:  "数分前"
+    1-23h: "{n}時間前"
+    1-6d:  "{n}日前"
+    7d+:   "{n}日前" (赤文字)
+
+■ broken_connection (接続切れ):
+  赤帯バナー (stale バナーより優先して上部に表示):
+  ┌─────────────────────────────────────────┐
+  │ 🔴 {connection_name}への接続が切れています   │
+  │ タップして再接続                             │
+  └─────────────────────────────────────────┘
+  connection_name の決定:
+    email_connections.last_error = 'token_revoked'
+      → "Gmail ({email_address})"
+    income_connections の失敗
+      → "{provider_name} (収入連携)"
+  broken_connection と is_stale が同時に発生する場合:
+    赤帯バナー (broken) を上に、amber バナー (stale) を下に表示。
+    両方表示する (broken が stale の原因とは限らない)。
+
+■ バナー表示の優先順位:
+  1. broken_connection (赤帯) — 最優先
+  2. is_stale (amber帯) — broken が無い場合、またはその下
+  3. WARNING/CRITICAL ステータス — ヒーロー数値の色で表現
+  ※ SETUP_REQUIRED 時はグラフ非表示なので stale バナーも非表示
+```
+
+### 10e. 設計判断
 
 - **「使っていい額」ではなく「自由に使える余裕」。** 日割り予算のように消費を誘導しない。
   「¥38,200余裕がある」は事実の提示。「¥5,000使っていい」は行動の指示。Credebiは前者。

@@ -186,14 +186,28 @@ async function detectSubscriptionPattern(
   if (!merchant) return
 
   // Step 1: 既知サブスクDBと照合
+  // known_DB matches also require user confirmation to prevent false positive
+  // pollution of fixed_costs. A merchant name matching "NETFLIX" doesn't guarantee
+  // the charge is a subscription (could be gift card purchase, refund adjustment, etc.)
   const knownMatch = matchKnownSubscription(merchant, amount)
   if (knownMatch) {
-    await createOrUpdateSubscription(userId, {
+    const subscription = await createOrUpdateSubscription(userId, {
       name: knownMatch.name,
       amount,
       billing_cycle: knownMatch.billing_cycle,
       account_id: newTransaction.account_id,
       detected_from: 'known_db',
+      status: 'pending_confirm',  // Decision 7: require user confirmation even for known_DB
+    })
+    await sendPush(userId, {
+      title: 'サブスクを検知しました',
+      body: `${knownMatch.name} (¥${amount.toLocaleString()}/${knownMatch.billing_cycle === 'monthly' ? '月' : '年'})`,
+      deepLink: `credebi://subscriptions/${subscription.id}/classify`,
+      actions: [
+        { id: 'recurring', title: 'サブスクとして登録' },
+        { id: 'installment', title: '分割払い' },
+        { id: 'dismiss', title: '無視' },
+      ],
     })
     return
   }
@@ -466,6 +480,92 @@ async function detectSubscriptionsAfterBootstrap(userId: string): Promise<void> 
 検知時:
   → Push通知「Netflix の課金が確認されません。解約しましたか？」
   → ユーザーが確認 → is_active = false
+```
+
+### 6a. サブスクリプション ステータス遷移 (Decision 7)
+
+```
+status lifecycle:
+
+  pending_confirm ──[ユーザー確認]──→ confirmed
+       │                                  │
+       │                                  │ next_billing_at + 7日
+       │                                  │ 新規課金なし
+       │                                  ▼
+       │                            payment_pending
+       │                                  │
+       │                    ┌─────────────┼─────────────┐
+       │                    │             │             │
+       │               新規課金あり   +30日課金なし   解約メール検知
+       │                    │             │             │
+       │                    ▼             ▼             ▼
+       │               confirmed      cancelled     cancelled
+       │                              (set cancelled_at)
+       │
+       └──[無視]──→ cancelled (is_active = false)
+
+遷移ルール:
+
+1. next_billing_at + 7日 経過、新規課金なし
+   → status = 'payment_pending'
+   → Push通知「Netflix の課金が確認されません。解約しましたか？」
+
+2. next_billing_at + 30日 経過、新規課金なし
+   → status = 'cancelled', cancelled_at = now()
+   → is_active = false
+   → Push通知「Netflix を解約済みとしてマークしました」
+
+3. payment_pending 中に新規課金を検知
+   → status = 'confirmed'
+   → next_billing_at を次の周期に更新
+   → Push通知なし (正常復帰)
+
+4. 「解約」「キャンセル」メールを受信
+   → status = 'cancelled', cancelled_at = now()
+   → is_active = false
+   → Push通知で確認
+
+実装: pg_cron daily job がstatus遷移をチェック。
+```
+
+### 6a-2. サブスク一覧の鮮度表示 (DT-077)
+
+```
+staleness display rule:
+
+  daysSinceLastTransaction = today - max(transacted_at)
+    WHERE merchant_name matches subscription.name
+
+  threshold = billing_cycle_days * 1.5
+    (monthly: 45日, yearly: 547日)
+
+  if daysSinceLastTransaction > threshold:
+    → サブスク一覧で「最終確認: X日前」を表示
+    → stale_sources に subscription.id を追加
+    → data_as_of を最終取引日に設定 (Design Principle #2: Stale Data Must Look Stale)
+
+例:
+  Netflix (月額) — 最終課金: 52日前 → 「最終確認: 52日前」⚠️
+  Spotify (月額) — 最終課金: 28日前 → 正常表示
+```
+
+### 6a-3. Bootstrap 時の金額ルール (DT-219)
+
+```
+bootstrap時は最新取引額を使用する（最古ではない）。価格改定を反映するため。
+
+例:
+  Netflix の取引履歴:
+    2025-11: ¥1,490
+    2025-12: ¥1,490
+    2026-01: ¥1,790  ← 値上げ
+
+  → subscription.amount = ¥1,790 (最新)
+  → metadata.previous_amount = ¥1,490
+
+複数取引がある場合、transacted_at の最新の amount を採用する。
+最古の金額を使うと、すでに終わった旧価格で projection が動き、
+実際の引き落としより少なく見積もる = 見逃しNG (Design Principle #3 違反)。
 ```
 
 ### 6b. 分割払い終了処理 (DT-110)

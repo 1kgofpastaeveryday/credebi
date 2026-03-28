@@ -204,6 +204,27 @@ CREATE TABLE users (
   -- CRITICAL/broken_connection: APNs interruption-level = 'time-sensitive' で集中モード貫通 (critical は Apple 特別entitlement必要)。
   -- Bypass: CRITICAL within 7d + broken_connection → always deliver regardless of level
   -- Bootstrap: setup notifications exempt from cap at all levels
+  --
+  -- DT-070: Bootstrap Notification Batching (burst prevention)
+  -- ──────────────────────────────────────────────────────────
+  -- During bootstrap (initial inbox scan), many subscription detections and
+  -- transaction parsings fire in quick succession. Sending a Push for each
+  -- would overwhelm the user and waste their goodwill on day 1.
+  --
+  -- Rules:
+  --   1. Rate limit: max 1 notification per 10 minutes during bootstrap
+  --   2. Batching: multiple detections within a batch window are combined
+  --      into a single notification:
+  --        "3件のサブスクが検知されました。タップして確認"
+  --        "12件の取引を検知しました"
+  --   3. After bootstrap_completed_at is set, accumulated bootstrap
+  --      notifications count toward the user's daily cap (notification_level).
+  --   4. bootstrap_notification_count is stored in
+  --      email_connections.metadata JSONB and reset to 0 after bootstrap
+  --      completes.
+  --   5. CRITICAL notifications (e.g. broken_connection) are never batched
+  --      or rate-limited, even during bootstrap.
+  --
   created_at      TIMESTAMPTZ DEFAULT now()
 );
 
@@ -225,6 +246,7 @@ CREATE TABLE email_connections (
   last_synced_at  TIMESTAMPTZ,
   last_resync_at  TIMESTAMPTZ,           -- DT-003: HISTORY_ID_EXPIRED recovery timestamp
   bootstrap_completed_at TIMESTAMPTZ,    -- DT-049: initial inbox scan completion
+  metadata        JSONB DEFAULT '{}',     -- DT-070: { bootstrap_notification_count: number, ... }
   consecutive_failure_count INT DEFAULT 0,  -- DT-008: error tracking
   last_failure_at TIMESTAMPTZ,              -- DT-008: last failure timestamp
   is_active       BOOLEAN DEFAULT true,
@@ -1018,7 +1040,7 @@ CREATE POLICY "users_own_data" ON pending_ec_correlations
 CREATE TABLE system_alerts (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id       UUID REFERENCES users(id),  -- NULL = system-wide alert
-  alert_type    TEXT NOT NULL,  -- 'stale_pending_webhook', 'broken_connection', 'stale_sync'
+  alert_type    TEXT NOT NULL,  -- 'stale_pending_webhook', 'broken_connection', 'stale_sync', 'resync_gap'
   message       TEXT NOT NULL,
   email_connection_id  UUID REFERENCES email_connections(id) ON DELETE SET NULL,
   income_connection_id UUID,  -- FK: see ALTER TABLE below income_connections (XDOC-R4-003)

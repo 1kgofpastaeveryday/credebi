@@ -552,6 +552,35 @@ Rules:
 - その他: プラットフォーム依存 → 初回取得時に学習
 ```
 
+### 4d. Session Expiry Re-Authentication Flow
+
+freee OAuth session が切れた場合の復帰フロー:
+
+#### Push通知テンプレート
+- title: "収入データの取得が停止しています"
+- body: "{employer_name}への接続が切れました。タップして再ログイン"
+- action: deep link → credebi://income_connections/{id}/reauth
+- interruption-level: 'active' (通常通知、Focus時は配信待ち)
+
+#### 再認証フロー
+1. Push タップ → アプリ内 WebView で freee OAuth 再認可画面を表示
+2. ユーザー認可 → 新 access_token + refresh_token 取得
+3. 新 token → Vault 書き込み (compare-and-swap で race 防止)
+4. session_status = 'active', session_expires_at = 新有効期限
+5. 即座に sync-income-freee 実行 → confidence 復帰
+6. UI: "接続が復旧しました" トースト表示
+
+#### エスカレーション
+- Push 1回目: session_status = 'expired' 検知時 (即時)
+- Push 2回目: 24時間後にリマインダー
+- Push 3回目: 72時間後に最終リマインダー
+- 3回送信後も未復帰 → is_active = false, system_alert 作成
+- projection: confidence を 0.3 に降格、stale_sources に追加
+
+#### 通知制限
+- notification_level = 'least' のユーザーには送信しない
+- notification_level = 'less' 以上で配信
+
 ### 4e. Playwright 実行環境
 
 ```text

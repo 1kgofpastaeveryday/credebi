@@ -222,6 +222,36 @@ serve(async (req: Request) => {
 })
 ```
 
+### Gap Detection After Resync
+
+resync 実行後、取得件数が resyncLimit に達した場合、
+取得しきれなかったメールが存在する可能性がある。
+
+#### 検知条件
+resync_count >= resyncLimit (Tier別: Free=100, Standard=300, Pro=500)
+
+#### アクション
+1. system_alert 作成:
+   - alert_type: 'resync_gap'
+   - message: "{email_display}: 長期間の未接続により、一部のメールが取得できませんでした"
+   - user_id: 対象ユーザー
+
+2. projection stale_sources に追加:
+   - 'resync_gap:{email_display}'
+
+3. UI 通知 (Push):
+   - title: "メール取得に関するお知らせ"
+   - body: "長期間ご利用がなかったため、一部の取引が反映されていない可能性があります"
+   - notification_level: 'less' 以上で配信
+
+4. UI バナー (アプリ内):
+   - projection画面の stale_sources バナーに含まれる
+   - タップ → 「手動で取引を追加」画面へ
+
+#### Design Principle #1 適用
+「静かに穴が空く」を防ぐため、resync上限に達したことを
+必ずユーザーに通知する。データ欠損の可能性を隠さない。
+
 ### 3b. Gmail History API でのメール取得
 
 ```typescript
