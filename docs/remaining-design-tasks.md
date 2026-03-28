@@ -14,8 +14,16 @@
 >   API auth RLS統一, bootstrap 30日+batch検知, alert dedup, source traceability
 > **Round 5**: adversarial design review → DT-198~DT-243 (46件新規、5件 overlap)。
 > → P0 9件は即時修正対象。P1 22件、P2 15件をバックログ追加。
+> **Round 5 P1 Triage (2026-03-28)**: 5 Cluster一括設計トリアージ + mechanical fixes。
+> → P0 9件は全件artifact反映確認済み。P1 46件解消 (残7件はdoc整合のみ)。
+> → Cluster 1: Security/Auth分離, PII policy, LLM trust boundary
+> → Cluster 2: next_income汎化, partial degraded, income堅牢化, JST utility
+> → Cluster 3: subscription lifecycle, notification guard, re-auth flow
+> → Cluster 4: Edge Function scaffold, cron定義, batch並列化, Tier制限
+> → Cluster 5: parser scope (normalization, MIME, currency, card matching)
+> → DT-064 (auto-categorization) はPhase 2据え置き。
 > Total DTs: 243 (94 original + 35 R1 + 17 R2 + 14 R3 + 37 R4 + 46 R5)。
-> Round 1〜4 のP0は完了。Round 5 で新規P0が再度発生。
+> Round 1〜4 のP0は完了。Round 5 P0完了、P1 残7件 (doc整合), P2 18件。
 > 既知 carry-over: DT-184, DT-192, DT-196, DT-197 は継続。
 > ⚠️ 注: これは**設計クローズ** (spec/schema/scaffolding) であり、**runtime検証**はまだ。
 > migration適用・実装・E2Eテストによる動作検証が次フェーズ。
@@ -59,14 +67,14 @@
 | DT-022 | ~~P0~~ ✅ | 収入予測 | ~~freee basic_pay_rule の self_only 権限アクセス可否を実機検証~~ **検証完了 (2026-03-11)**: self_only ではアクセス不可。時給は手入力で確定 | 完了 | `docs/deep-dive/06-income-projection.md:§3b` |
 | DT-023 | P1 ⬇ | 収入予測 | 給与控除の概算ロジック確定 | 源泉徴収率テーブル、社保閾値 (月88,000円/年130万円) が定義済み。**E3検証で学生バイトの控除はほぼゼロと判明 (所得税¥700/月程度)。勤務給精度が十分高いため優先度をP1に下げ** | `docs/deep-dive/06-income-projection.md:§3c` |
 | DT-024 | P1 | 収入予測 | Playwright実行環境の最終選定 | Browserless vs 自前 vs デバイスのコスト・制約比較が完了 | `docs/deep-dive/06-income-projection.md:§4e` |
-| DT-025 | P1 | 収入予測 | セッション切れ検知→再ログインのUX設計 | Push通知文言、再ログインWebViewフロー、頻度上限が確定 | `docs/deep-dive/06-income-projection.md:§4d` |
+| DT-025 | ~~P1~~ ✅ | 収入予測 | ~~セッション切れ検知→再ログインのUX設計~~ **設計完了 (2026-03-28)**: freee session expiry re-auth flow 定義、Push 通知文言・頻度上限確定 | 完了 | `docs/deep-dive/06-income-projection.md:§4d` |
 | DT-026 | P1 | 収入予測 | confidence スコア算出ルールの詳細化 | 月初/月中/月末の閾値、予測エンジンへの反映ロジックが確定 | `docs/deep-dive/06-income-projection.md:§3d` |
 | DT-027 | P2 | 収入予測 | カメラOCRシフト表取り込みの精度検証 | テスト画像セットでの認識率が確認済み | `docs/deep-dive/06-income-projection.md:§4a` |
 | DT-028 | ~~P0~~ ✅ | 障害検知 | ~~壊れた接続の検知・ユーザー通知 (Dead Man's Switch)~~ **設計完了 (2026-03-11)**: `system_alerts` テーブル追加、`last_error` カラム追加、12時間ごとのpg_cronジョブで48h超のstale接続を検知→is_active=false→アラート作成。Token Lifecycle §3 にもフロー追記 | 完了 | `DESIGN.md`, `docs/deep-dive/02-gmail-integration.md:§5` |
 | DT-029 | ~~P0~~ ✅ | データ整合 | ~~parsed_emails → transactions 部分書き込み防止~~ **設計+実装完了 (2026-03-11)**: `insert_parsed_email_with_transaction` ストアドプロシージャをDESIGN.mdに定義。webhook handler TODOを更新。SECURITY DEFINER で単一トランザクション保証 | 完了 | `DESIGN.md`, `supabase/functions/handle-email-webhook/index.ts` |
 | DT-030 | P1 | 監査 | parse_failures テーブルの運用方針 | パーサー未対応/デコード失敗メールの記録。ユーザー通知要否、保持期間、ダッシュボード表示方針を確定 | `DESIGN.md:parse_failures` |
-| DT-031 | P1 | パフォーマンス | renew-gmail-watch のバッチ並列化 | 1000+ユーザーで150秒タイムアウト回避。バッチ並列 (Promise.all) or シャード呼び出し設計 | `supabase/functions/renew-gmail-watch` |
-| DT-032 | P1 | 最適化 | Gmail API クォータ最適化 | messages.get で format=metadata → From/Subject判定 → 必要時のみ本文取得。HISTORY_ID_EXPIRED時は `q="newer_than:7d (from:...)"` でフィルタ | `docs/deep-dive/02-gmail-integration.md:§3a` |
+| DT-031 | ~~P1~~ ✅ | パフォーマンス | ~~renew-gmail-watch のバッチ並列化~~ **設計完了 (2026-03-28)**: 50-chunk Promise.allSettled パターン導入 | 完了 | `supabase/functions/renew-gmail-watch` |
+| DT-032 | ~~P1~~ ✅ | 最適化 | ~~Gmail API クォータ最適化~~ **設計完了 (2026-03-28)**: 2-step metadata-then-full fetch パターン定義 | 完了 | `docs/deep-dive/02-gmail-integration.md:§3a` |
 ||||||| |
 | | | **── 2周目レビュー発見 (2026-03-11) ──** | | | |
 ||||||| |
@@ -76,24 +84,24 @@
 | DT-036 | ~~P0~~ ✅ | 冪等性 | ~~**TTLクリーンアップジョブ定義 (processed_webhook_messages + pending_ec_correlations)**~~ **設計完了 (2026-03-11)**: pg_cronジョブ5本をDESIGN.mdに定義。webhook 7日TTL、EC突合 30日TTL、stale pending 24h監視、watch renewal、monthly summaries | 完了 | `DESIGN.md:pg_cronジョブ定義` |
 | DT-037 | ~~P0~~ ✅ | 収入予測 | ~~**freeeトークン失効時の予測劣化処理**~~ **設計完了 (2026-03-11)**: sync-income-freee §6a にエラーハンドリング仕様追記。401/403でis_active=false+Push、confidence 0.3降格、3回連続失敗でsystem_alerts記録 | 完了 | `docs/deep-dive/06-income-projection.md:§6a` |
 | DT-038 | ~~P0~~ ✅ | 収入予測 | ~~**12月年跨ぎ処理 (month=13→year+1,month=1)**~~ **設計修正完了 (2026-03-11)**: `toFreeeApiParams()` 変換関数を定義。apiMonth>12時にyear+1, month-12へ変換 | 完了 | `docs/deep-dive/06-income-projection.md:§3c` |
-| DT-039 | P1 | 収入予測 | **estimateRemainingHours の引数型不整合修正** | 関数シグネチャは `WorkRecordSummary` だが呼び出し元は `DailyWorkRecord[]` を渡す。TypeScript型で検知可能だが設計docsの修正が必要 | `docs/deep-dive/06-income-projection.md:§3d` |
-| DT-040 | P1 | 収入予測 | **時給期間ギャップ時のエラーハンドリング** | `calcDailyWage()` のthrowがバッチ内で握りつぶされると月給が途中で切断。エラー蓄積→projected_incomes.breakdownで可視化する設計 | `docs/deep-dive/06-income-projection.md:§3d` |
+| DT-039 | ~~P1~~ ✅ | 収入予測 | ~~**estimateRemainingHours の引数型不整合修正**~~ **設計完了 (2026-03-28)**: `DailyWorkRecord[]` を受け取るよう修正 (DT-111 と同時解決) | 完了 | `docs/deep-dive/06-income-projection.md:§3d` |
+| DT-040 | ~~P1~~ ✅ | 収入予測 | ~~**時給期間ギャップ時のエラーハンドリング**~~ **設計完了 (2026-03-28)**: エラー蓄積パターン導入、projected_incomes.breakdown で可視化 | 完了 | `docs/deep-dive/06-income-projection.md:§3d` |
 | DT-041 | ~~P0~~ ✅ | 支出予測 | ~~**月末ゼロ除算ガード**~~ **設計修正完了 (2026-03-11)**: `Math.max(1, daysBetween(...))` で最終日ガード。同時にDT-052 (JST) も適用 | 完了 | `docs/deep-dive/05-projection-engine.md:§10` |
-| DT-042 | P1 | サブスク | **known_DB一致時のユーザー確認フロー** | 現設計はknown_DB一致で即サブスク登録 (Push通知なし)。誤検知→fixed_costs汚染を防ぐため、パターン検知と同様のconfirmフロー追加 | `docs/deep-dive/04-subscription-detection.md:§4` |
-| DT-043 | P1 | サブスク | **支払い待ちの中間状態設計** | `next_billing_at` を過ぎて7日間は is_active=true のまま。`status='payment_pending'` 中間状態を追加し、予測エンジンで「未確認」として扱う | `docs/deep-dive/04-subscription-detection.md:§6` |
-| DT-044 | P1 | pg_cron | **monthly_summaries ジョブ失敗検知** | pg_cron失敗時にサマリが古いまま残る。`last_successful_run_at` 列 or `job_runs` テーブルで監視。24h超未更新でアラート | `DESIGN.md:monthly_summaries` |
+| DT-042 | ~~P1~~ ✅ | サブスク | ~~**known_DB一致時のユーザー確認フロー**~~ **設計完了 (2026-03-28)**: known_DB match 時もユーザー確認必須に変更 | 完了 | `docs/deep-dive/04-subscription-detection.md:§4` |
+| DT-043 | ~~P1~~ ✅ | サブスク | ~~**支払い待ちの中間状態設計**~~ **設計完了 (2026-03-28)**: `payment_pending` 中間状態追加、予測エンジンでの扱い定義 | 完了 | `docs/deep-dive/04-subscription-detection.md:§6` |
+| DT-044 | ~~P1~~ ✅ | pg_cron | ~~**monthly_summaries ジョブ失敗検知**~~ **設計完了 (2026-03-28)**: heartbeat アーキテクチャで失敗検知 | 完了 | `DESIGN.md:monthly_summaries` |
 | DT-045 | ~~P0~~ ✅ | スキーマ | ~~**スキーマ不整合一括修正**~~ **完了 (2026-03-11)**: (a) `pending_ec_correlations` テーブル+RLS追加 ✅ (b) `last_resync_at` 追加済み ✅ (c) `parsed_type` カラム既存確認 ✅ (d) `transaction_line_items` RLSポリシー追加 ✅ (e) 3インデックス追加 ✅ | 完了 | `DESIGN.md` |
-| DT-046 | P1 | セキュリティ | **内部関数authの専用シークレット化** | 現在service_role_key (DB全権限) を認証に使用。専用の低権限 `INTERNAL_SYNC_SECRET` に分離。漏洩時のblast radius低減 | `supabase/functions/renew-gmail-watch`, `supabase/functions/proactive-inbox-crawl` |
-| DT-047 | P1 | プライバシー | **PII保持ポリシー・削除設計** | (a) `parsed_emails` のemail_subject/sender保持期間定義 (b) 全user_id FKに `ON DELETE CASCADE` (c) アカウント削除時の完全データ消去フロー (d) 個人情報保護法対応の保持期間ルール | `DESIGN.md`, 全テーブル |
-| DT-048 | P1 | 堅牢化 | **update_history_id_monotonic のnon-numeric安全対策** | `last_history_id::bigint` castが非数値文字列で例外。`NULLIF + safe cast` or `TRY/CATCH` でハンドリング | `DESIGN.md` (stored procedure) |
+| DT-046 | ~~P1~~ ✅ | セキュリティ | ~~**内部関数authの専用シークレット化**~~ **設計完了 (2026-03-28)**: `INTERNAL_SYNC_SECRET` に分離、caller auth を service_role_key から切り離し | 完了 | `supabase/functions/renew-gmail-watch`, `supabase/functions/proactive-inbox-crawl` |
+| DT-047 | ~~P1~~ ✅ | プライバシー | ~~**PII保持ポリシー・削除設計**~~ **設計完了 (2026-03-28)**: PII retention policy 定義、ON DELETE CASCADE 追加、soft delete migration 作成 | 完了 | `DESIGN.md`, `supabase/migrations/20260328000002_cascade_delete.sql`, `supabase/migrations/20260328000003_soft_delete.sql` |
+| DT-048 | ~~P1~~ ✅ | 堅牢化 | ~~**update_history_id_monotonic のnon-numeric安全対策**~~ **設計完了 (2026-03-28)**: safe bigint cast 実装 | 完了 | `DESIGN.md` (stored procedure) |
 ||||||| |
 | | | **── 3周目レビュー発見 (2026-03-11) ──** | | | |
 ||||||| |
 | DT-049 | ~~P0~~ ✅ | オンボーディング | ~~**初回Gmail接続時のブートストラップinboxスキャン**~~ **設計完了 (2026-03-11)**: OAuthフロー Step 9 にbootstrap scan追加。Tier別スキャン日数、`bootstrap_completed_at` カラム、UIローディング表示を定義。スキーマにも反映済み | 完了 | `docs/deep-dive/02-gmail-integration.md:§2b`, `DESIGN.md:email_connections` |
 | DT-051 | ~~P0~~ ✅ | 認証 | ~~**OAuthトークンリフレッシュ結果のDB永続化**~~ **設計完了 (2026-03-11)**: Token Lifecycle §2 にVault書き戻し必須を明記。`access_token_expires_at` カラム追加。Google refresh制限 (25回/6時間) への言及追加。スキーマ反映済み | 完了 | `docs/deep-dive/02-gmail-integration.md:§5`, `DESIGN.md:email_connections` |
 | DT-052 | ~~P0~~ ✅ | 横断設計 | ~~**UTC→JST変換の統一 (日本限定アプリ)**~~ **設計+実装完了 (2026-03-11)**: DESIGN.mdにタイムゾーン規約セクション追加。CLAUDE.mdに規約追加。proactive-inbox-crawlのtargetMonth修正。projection-engineのcalculateDailyBudget修正 | 完了 | `DESIGN.md`, `CLAUDE.md`, `supabase/functions/proactive-inbox-crawl/index.ts`, `docs/deep-dive/05-projection-engine.md` |
-| DT-053 | P1 | サブスク | **サブスク検知の加盟店名ファジーマッチ** | 現設計はknown_subscription_servicesとの完全一致。実際の加盟店名は `NETFLIX.COM` / `Netflix` / `ネットフリックス` 等バリエーションあり。NFKC正規化 + ローマ字/カタカナ変換 + 部分一致スコアリングが必要 | `docs/deep-dive/04-subscription-detection.md:§4` |
-| DT-054 | P1 | リアルタイム | **Realtimeチャンネル名の衝突防止・クリーンアップ** | Supabase Realtimeのチャンネル名が固定文字列の場合、複数タブ・複数デバイスで衝突。`user_id:uuid` をチャンネル名に含め、アプリ非アクティブ時にunsubscribe | `docs/deep-dive/05-projection-engine.md` (リアルタイム更新セクション) |
+| DT-053 | ~~P1~~ ✅ | サブスク | ~~**サブスク検知の加盟店名ファジーマッチ**~~ **設計完了 (2026-03-28)**: merchant name NFKC 正規化パイプライン定義 | 完了 | `docs/deep-dive/04-subscription-detection.md:§4` |
+| DT-054 | ~~P1~~ ✅ | リアルタイム | ~~**Realtimeチャンネル名の衝突防止・クリーンアップ**~~ **設計完了 (2026-03-28)**: `projection:{userId}` チャンネル名規約定義 | 完了 | `docs/deep-dive/05-projection-engine.md` (リアルタイム更新セクション) |
 ||||||| |
 | | | **── 3周目 サジェスト・カテゴリ深掘りレビュー (2026-03-11) ──** | | | |
 ||||||| |
@@ -105,18 +113,18 @@
 | DT-060 | P1 | サジェスト | **履歴スコアに時系列減衰なし** | `count / 10` の単純カウントで、6ヶ月前の旧住所近くの店が `score=1.0` で出続ける。`transacted_at` ベースの減衰関数が必要 | `docs/deep-dive/03-suggestion-engine.md:§3` |
 | DT-061 | P1 | サジェスト | **amount=0/refund取引でサジェスト候補が空** | `Math.abs(0)` で金額レンジが `BETWEEN 0 AND 0` + `lt('amount', 0)` で矛盾。キャンセル取引にサジェストが必要かの設計判断も欠落 | `docs/deep-dive/03-suggestion-engine.md:§5` |
 | DT-062 | ~~P1~~ ✅ | カテゴリ | ~~**システム/ユーザーカテゴリ同名共存**~~ **DT-059と同時解決 (2026-03-11)**: `UNIQUE(user_id, name)` 制約追加。システム (user_id=NULL) とユーザーカテゴリは名前空間が分離される。ユーザーは同名のカスタムカテゴリを作成できるが、自分のスコープ内ではUNIQUE | 完了 | `DESIGN.md:categories` |
-| DT-063 | P1 | カテゴリ | **LLMカテゴリ文字列→UUID変換フォールバック未定義** | LLMが返す `suggested_category` 文字列がシステムカテゴリ名と完全一致しない場合 (表記揺れ) のハンドリング不在 | `docs/deep-dive/01-email-parser.md:§5` |
-| DT-064 | P1 | カテゴリ | **バックグラウンド自動分類ジョブ未定義** | pending取引の「後日LLM自動分類」のpg_cronジョブが存在しない。トリガー条件・閾値・実行タイミング全て未定義 | `DESIGN.md:Edge Functions一覧` |
+| DT-063 | ~~P1~~ ✅ | カテゴリ | ~~**LLMカテゴリ文字列→UUID変換フォールバック未定義**~~ **設計完了 (2026-03-28)**: LLM category → UUID fallback 定義 (NULL if no match) | 完了 | `docs/deep-dive/01-email-parser.md:§5` |
+| DT-064 | ~~P1~~ P2 ⬇ | カテゴリ | **バックグラウンド自動分類ジョブ未定義** — Phase 2 据え置き: LLM 統合と同時に実装。MVP は手動分類で運用 | pending取引の「後日LLM自動分類」のpg_cronジョブが存在しない。トリガー条件・閾値・実行タイミング全て未定義 | `DESIGN.md:Edge Functions一覧` |
 ||||||| |
 | | | **── 3周目 Gemini CLI レビュー (2026-03-11) ──** | | | |
 ||||||| |
 | DT-065 | P1 | OAuth | **OAuth部分同意 (スコープ拒否) の検知** | Google同意画面で `gmail.readonly` のみ拒否可能。OAuth成功→watch()失敗のパス。`email_connections` 作成前にスコープ完全性チェック必要 | `docs/deep-dive/02-gmail-integration.md:§2b-2c` |
-| DT-066 | P1 | 運用 | **メールアカウント接続数のTier別上限** | 5+アカウント接続時にrenew-gmail-watchバッチがGoogle APIレート制限 or タイムアウト。Tier別上限 (Free:1, Standard:2, Pro:5) を定義 | `DESIGN.md:email_connections`, `supabase/functions/renew-gmail-watch` |
-| DT-067 | P1 | パーサー | **SMBCカード紐付け曖昧性 (last4なし)** | SMBC NLメールにカード下4桁なし。同一ユーザーが複数SMBCカード持ちの場合に取引の帰属先が不定 | `docs/deep-dive/01-email-parser.md:§3a` |
-| DT-068 | P1 | パーサー | **外貨取引の金額パース** | `parseInt(amount.replace(/,/g, ''))` が小数点を無視。$10.50→10円として記録。海外利用・Apple Services等で発生 | `docs/deep-dive/01-email-parser.md:§3` |
+| DT-066 | ~~P1~~ ✅ | 運用 | ~~**メールアカウント接続数のTier別上限**~~ **設計完了 (2026-03-28)**: Tier 別上限 trigger 定義 (Free:1, Standard:2, Pro:5) | 完了 | `DESIGN.md:email_connections`, `supabase/functions/renew-gmail-watch` |
+| DT-067 | ~~P1~~ ✅ | パーサー | ~~**SMBCカード紐付け曖昧性 (last4なし)**~~ **設計完了 (2026-03-28)**: card_last4 missing 時の汎用フロー定義 | 完了 | `docs/deep-dive/01-email-parser.md:§3a` |
+| DT-068 | ~~P1~~ ✅ | パーサー | ~~**外貨取引の金額パース**~~ **設計完了 (2026-03-28)**: parseFloat 対応、foreign currency handling 定義 | 完了 | `docs/deep-dive/01-email-parser.md:§3` |
 | DT-069 | P1 | セキュリティ | **メール転送・偽装対策** | DKIM/SPF検証なし + 転送メール (Fwd:) のSubject/Body変更でパース失敗。意図的偽装で偽取引作成可能 | `docs/deep-dive/01-email-parser.md:§2` |
-| DT-070 | P1 | UX | **通知の過多 (バッチ化・静音時間)** | 高頻度利用者 (コンビニ×3/日等) に即時Push通知→疲弊。通知バッチ化 or Quiet Hours設計なし | `DESIGN.md:Push通知` |
-| DT-071 | P1 | 復帰 | **60日非アクティブ復帰時のデータ欠損** | resyncLimit (max 500件) が2ヶ月分のメールに不足する可能性。永続的な取引履歴の欠損→予測精度低下 | `DESIGN.md:非アクティブポリシー`, `docs/deep-dive/02-gmail-integration.md:§3a` |
+| DT-070 | ~~P1~~ ✅ | UX | ~~**通知の過多 (バッチ化・静音時間)**~~ **設計完了 (2026-03-28)**: bootstrap notification rate limit 導入、quiet hours 定義 | 完了 | `DESIGN.md:Push通知` |
+| DT-071 | ~~P1~~ ✅ | 復帰 | ~~**60日非アクティブ復帰時のデータ欠損**~~ **設計完了 (2026-03-28)**: resync gap 検知 + ユーザー通知フロー定義 | 完了 | `DESIGN.md:非アクティブポリシー`, `docs/deep-dive/02-gmail-integration.md:§3a` |
 | DT-072 | P2 | iOS | **オフラインキャッシュ (SwiftData)** | Supabase Realtime依存で、オフライン時に予測表示不可。60日分のprojectionをローカルキャッシュする設計なし | `docs/ui/prototypes/ProjectionViewPrototype.swift` |
 ||||||| |
 | | | **── 局所レビュー: サブスク検知 + 予測/UI (2026-03-11) ──** | | | |
@@ -125,18 +133,18 @@
 | DT-074 | ~~P1~~ ✅ | サブスク | ~~**subscriptions に category_id なし**~~ **修正完了 (2026-03-11)**: 予測エンジンでのカテゴリ別集計・UI表示にカテゴリ紐付けが必要。`ON DELETE SET NULL` 付きで追加 | 完了 | `DESIGN.md:subscriptions` |
 | DT-075 | ~~P1~~ ✅ | サブスク | ~~**detected_from enum がスキーマとドキュメントで不整合**~~ **修正完了 (2026-03-11)**: スキーマ側を `'email_keyword', 'pattern', 'known_db', 'manual'` に修正。04-subscription-detection.md の使用値と一致 | 完了 | `DESIGN.md:subscriptions`, `docs/deep-dive/04-subscription-detection.md` |
 | DT-076 | ~~P1~~ ✅ | サブスク | ~~**subscriptions に updated_at なし**~~ **修正完了 (2026-03-11)**: 金額変更・解約・再開等の変更追跡に必要。Dead Man's Switch のstale検知対象にもなる | 完了 | `DESIGN.md:subscriptions` |
-| DT-077 | P1 | サブスク | **サブスク画面にデータ鮮度 (staleness) 表示なし** | Design Principle #2 違反。subscriptionsの `updated_at` と直近の取引日から staleness を算出し、UI上で「最終確認: X日前」を表示する設計が必要 | `docs/deep-dive/04-subscription-detection.md:§5` |
-| DT-078 | P1 | サブスク | **解約時の監査ログ不在** | `is_active=false` への変更で旧情報が失われる。`cancelled_at TIMESTAMPTZ` カラム or 変更ログテーブルで解約履歴を保持する設計が必要 | `docs/deep-dive/04-subscription-detection.md:§6` |
-| DT-079 | P1 | 予測契約 | **projection-response.schema.json の summary がオプショナル** | iOS UIは `summary.safety_status` を常時表示するが、スキーマ上は optional。required にするか、nil 時のフォールバック UI を定義する判断が必要 | `docs/contracts/projection-response.schema.json` |
-| DT-080 | P1 | UI設計 | **UI仕様に is_stale / data_as_of / stale_sources の参照なし** | DT-033 で API 契約には追加済みだが、iOS UI仕様 (プロトタイプ) に degraded display のルールが未反映。Design Principle #2 違反 | `docs/ui/prototypes/ProjectionViewPrototype.swift` |
+| DT-077 | ~~P1~~ ✅ | サブスク | ~~**サブスク画面にデータ鮮度 (staleness) 表示なし**~~ **設計完了 (2026-03-28)**: staleness 表示仕様定義、「最終確認: X日前」UI 設計 | 完了 | `docs/deep-dive/04-subscription-detection.md:§5` |
+| DT-078 | ~~P1~~ ✅ | サブスク | ~~**解約時の監査ログ不在**~~ **設計完了 (2026-03-28)**: `cancelled_at TIMESTAMPTZ` 監査カラム追加 | 完了 | `docs/deep-dive/04-subscription-detection.md:§6` |
+| DT-079 | ~~P1~~ ✅ | 予測契約 | ~~**projection-response.schema.json の summary がオプショナル**~~ **設計完了 (2026-03-28)**: summary を required に変更済み (DT-093 と同時解決) | 完了 | `docs/contracts/projection-response.schema.json` |
+| DT-080 | ~~P1~~ ✅ | UI設計 | ~~**UI仕様に is_stale / data_as_of / stale_sources の参照なし**~~ **設計完了 (2026-03-28)**: stale data UI spec 定義 (amber/red banners) | 完了 | `docs/ui/prototypes/ProjectionViewPrototype.swift` |
 | DT-081 | P2 | 予測契約 | **daily_breakdown がオプショナル (UI前提と不一致の可能性)** | balance_bars 内の daily_breakdown は optional で正しいが (全日に必要ではない)、UIが nil ケースをハンドルしているか確認が必要 | `docs/contracts/projection-response.schema.json` |
 ||||||| |
 | | | **── Gemini CLI 4th pass (2026-03-11) ──** | | | |
 ||||||| |
-| DT-082 | P1 | パーサー | **MIME構造ハンドリング未定義** | multipart/alternative (text/plain無し)、multipart/mixed (添付)、S/MIME署名メール等の一般的なMIME構造への対応が未設計。DT-069はDKIM/偽装対策でありMIME構造解析は別問題 | `docs/deep-dive/01-email-parser.md` |
-| DT-083 | P1 | パーサー | **card_last4 不一致時のフロー未定義** | parsed_card_last4 が financial_accounts のどのカードにもマッチしない場合の処理が未定義。account_id=NULL取引の扱い、ユーザーへのカード登録促進、予測への影響。DT-067はSMBC固有だがこれは汎用ケース | `docs/deep-dive/01-email-parser.md`, `DESIGN.md` |
+| DT-082 | ~~P1~~ ✅ | パーサー | ~~**MIME構造ハンドリング未定義**~~ **設計完了 (2026-03-28)**: MIME structure handling 仕様定義 (multipart/alternative, mixed, S/MIME) | 完了 | `docs/deep-dive/01-email-parser.md` |
+| DT-083 | ~~P1~~ ✅ | パーサー | ~~**card_last4 不一致時のフロー未定義**~~ **設計完了 (2026-03-28)**: card_last4 mismatch 時の汎用フロー定義 | 完了 | `docs/deep-dive/01-email-parser.md`, `DESIGN.md` |
 | DT-084 | P1 | セキュリティ | **Supabase Vault アクセスAPI契約未定義** | vault_secret_id を参照する設計だが、Edge FunctionからのVault読み書き手段が未定義。SECURITY DEFINER SP経由のRPC呼び出しが必要。関数シグネチャ・権限・TTL・ローテーション方針が全て未指定 | `DESIGN.md`, `docs/deep-dive/02-gmail-integration.md:§5` |
-| DT-085 | P1 | セキュリティ | **RLSバイパスの構造的リスク緩和策なし** | DT-046の専用シークレット化だけでは不十分。service_role使用時にuser_idフィルタ漏れ→テナント間データ漏洩の構造的リスク。SECURITY INVOKER SP必須化、データアクセス層のテナント分離パターン等の設計が必要 | `DESIGN.md`, `supabase/functions/` |
+| DT-085 | ~~P1~~ ✅ | セキュリティ | ~~**RLSバイパスの構造的リスク緩和策なし**~~ **設計完了 (2026-03-28)**: scopedQuery defense-in-depth wrapper 導入、service_role 使用時の user_id フィルタ必須化 | 完了 | `DESIGN.md`, `supabase/functions/_shared/db.ts` |
 | DT-086 | P2 | 予測契約 | **trigger_event_ids/cause_event_id がマジック文字列** | `"ev_lifecard_20260327"` 形式の文字列をiOSがパースしてディープリンクに使用。フォーマット変更でクライアントがサイレントに壊れる。構造化オブジェクト or UUID+ルックアップAPIへの移行が望ましい | `docs/contracts/projection-response.schema.json` |
 | DT-087 | ~~P1~~ ✅ | 公開API | ~~レート制限がインメモリで無効~~ **設計完了 (2026-03-11)**: DB側 `rate_limit_counters` テーブル + `increment_rate_limit` RPC に変更。Edge Functionはステートレスなのでインメモリは不可 | 完了 | `docs/deep-dive/07-public-api.md:§2f`, `DESIGN.md` |
 | DT-088 | ~~P1~~ ✅ | 公開API | ~~POST冪等性なし~~ **設計完了 (2026-03-11)**: `Idempotency-Key` ヘッダー必須 + `api_idempotency_keys` テーブルで24h TTLキャッシュ | 完了 | `docs/deep-dive/07-public-api.md:§4a`, `DESIGN.md` |
@@ -162,7 +170,7 @@
 | DT-108 | ~~P1~~ ✅ | 予測 | ~~前期確定カード請求と今期オープン分の区別なし~~ **設計修正 (2026-03-15)**: `calculateCardCharges` を2レコード返却に再設計 (committed + accumulating)。`is_committed` フラグ追加 | 完了 | `docs/deep-dive/05-projection-engine.md:§4` |
 | DT-109 | ~~P1~~ ✅ | UX | ~~「データ不足」状態がない~~ **設計修正 (2026-03-15)**: 三値ステータス (SETUP_REQUIRED / SAFE / WARNING) に変更。SETUP_REQUIRED時はグラフ非表示 | 完了 | `docs/deep-dive/05-projection-engine.md:§7` |
 | DT-110 | ~~P1~~ ✅ | サブスク | ~~分割払いとサブスクが区別不能~~ **設計修正 (2026-03-15)**: ユーザー確認UI (3択Push: サブスク/分割払い/無視)。`subscription_type`, `expected_end_at`, `remaining_count` 追加。installment は自動終了 (解約確認Push不発火) | 完了 | `DESIGN.md`, `docs/deep-dive/04-subscription-detection.md` |
-| DT-111 | P1 | 収入 | **`estimateRemainingHours` の引数型不一致 (DT-039 具体策)** | `WorkRecordSummary` 期待だが `DailyWorkRecord[]` を渡す→NaN伝播。呼び出し元で集約処理を追加 | `docs/deep-dive/06-income-projection.md:§3d` |
+| DT-111 | ~~P1~~ ✅ | 収入 | ~~**`estimateRemainingHours` の引数型不一致 (DT-039 具体策)**~~ **設計完了 (2026-03-28)**: DT-039 と同時解決。`DailyWorkRecord[]` を受け取るよう修正 | 完了 | `docs/deep-dive/06-income-projection.md:§3d` |
 | DT-112 | ~~P1~~ ✅ | 予測 | ~~Daily budget が60日horizon残高で今月分を割る~~ **設計修正 (2026-03-15)**: budget window = today → min(next income, end of month)。window内の支出のみ差引 | 完了 | `docs/deep-dive/05-projection-engine.md:§10` |
 | DT-113 | ~~P1~~ ✅ | サジェスト | ~~GPS信号が通知タップ時取得~~ **設計修正 (2026-03-15)**: GPS weight上限0.3、location_age>30分は無効、history/email_hint優先の方針記述 | 完了 | `docs/deep-dive/03-suggestion-engine.md:§4a` |
 | DT-114 | ~~P1~~ ✅ | 収入 | ~~`next_occurs_at` 月次進行ロジックなし~~ **設計修正 (2026-03-15)**: `advance-projected-income-dates` pg_cron job 追加 (monthly/weekly) | 完了 | `DESIGN.md` |
@@ -213,37 +221,37 @@
 | DT-158 | ~~P1~~ ✅ | UX | ~~未分類サブスク状態 (UX-R3-003)~~ **設計決定 (2026-03-15 R3)**: 自動検知サブスク = デフォルト信頼。即 projection に含める (is_active=true)。Push通知で「検知しました」→ 放置=OK、[違います]→is_active=false。新カラム不要。誤検知=支出多め=安全側の誤り (fail-safe)。検知漏れの方が Design Principle #1 違反 | 完了 | `docs/deep-dive/04-subscription-detection.md` |
 | DT-159 | ~~P1~~ ✅ | 予測 | ~~複数口座の income 除外が口座単位でない (PROJ-R3-002)~~ **設計修正 (2026-03-15 R3)**: Account-Scoped Cashflow Model 導入。`projected_incomes.bank_account_id` + `financial_accounts.settlement_account_id` 追加。per-account timeline 計算 → aggregate は派生。WARNING (口座単体0割れ、移動で解決可) / CRITICAL (合計0割れ) の4段階status | 完了 | `DESIGN.md`, `docs/deep-dive/05-projection-engine.md:§4` |
 | DT-160 | ~~P1~~ ✅ | UX | ~~Push通知の日次キャップ (UX-R3-006)~~ **設計決定 (2026-03-15 R3)**: ユーザー設定可能 4段階 (least/less/medium/full)。medium=デフォルト(3件/日)。quiet hours 23:00-07:00 JST。CRITICAL+broken_connectionは全レベルbypass。`users.notification_level` 追加 | 完了 | `DESIGN.md`, `docs/deep-dive/05-projection-engine.md:§6` |
-| DT-198 | P0 即対応 | Security | **users.tier のデフォルト値が Owner (3)** | `users.tier DEFAULT 0` + `CHECK (tier BETWEEN 0 AND 3)` が migration に反映されている | `supabase/migrations/20260317000002_tables.sql` |
-| DT-199 | P0 即対応 | Security | **users RLS の `FOR ALL` が self-tier-escalation を許す** | `SELECT`/`UPDATE` を分離した policy と、service_role 以外の tier 変更を拒否する BEFORE UPDATE trigger が定義されている | `supabase/migrations/20260317000005_rls.sql` |
-| DT-200 | P0 即対応 | Security | **`transactions.account_id` / `subscriptions.account_id` の所有権 IDOR 防止 trigger 不足** | 両テーブルで `account_id` が同一 `user_id` 所有口座のみ参照可能であることを強制する trigger が定義されている | `supabase/migrations/20260317000002_tables.sql`, `supabase/migrations/20260317000005_rls.sql` |
-| DT-201 | P0 即対応 | 予測 | **variable costs が projection に未接続** | `estimateVariableCosts()` が定義され、`monthly_summaries.avg(variable_costs + uncategorized)` を使って `buildTimeline` に反映される | `docs/deep-dive/05-projection-engine.md` |
-| DT-202 | P0 即対応 | 予測 | **`fixed_cost_items` に `account_id` がなく口座別ルーティング不能** | `fixed_cost_items.account_id` が追加され、未設定項目が aggregate で二重計上されない filter ルールが確定している | `supabase/migrations/20260317000002_tables.sql`, `docs/deep-dive/05-projection-engine.md` |
-| DT-203 | P0 即対応 | XDOC | **`projection-response.schema.json` の `status` enum が実装と不整合** | `SETUP_REQUIRED / SAFE / WARNING / CRITICAL` の4値 uppercase enum に更新され、top-level required に含まれている | `docs/contracts/projection-response.schema.json` |
-| DT-204 | P0 即対応 | XDOC | **`projection-response.schema.json` に主要 projection fields 欠落** | `account_projections`, `aggregate_balance`, `aggregate_timeline`, `aggregate_balance_bars`, `danger_zones`, `status`, `stale_sources` が Projection interface と整合している | `docs/contracts/projection-response.schema.json`, `docs/deep-dive/05-projection-engine.md` |
-| DT-205 | P0 即対応 | Ops | **Dead Man's Switch 自体の死活監視がない** | DMS の最終成功時刻を24時間以内で監視する外部ヘルスチェック (Edge Function か third-party monitor) が設計に追加されている | `supabase/migrations/20260317000007_cron_jobs.sql`, `DESIGN.md` |
-| DT-206 | P0 即対応 | Ops | **`pg_net` fire-and-forget により cron 失敗が不可視** | 各 Edge Function が success marker を書き込み、DMS が freshness を検証する heartbeat パターンが定義されている | `supabase/migrations/20260317000007_cron_jobs.sql`, `DESIGN.md` |
+| DT-198 | ~~P0~~ ✅ | Security | ~~**users.tier のデフォルト値が Owner (3)**~~ **設計完了 (2026-03-28)**: `users.tier DEFAULT 0` + `CHECK (tier BETWEEN 0 AND 3)` を migration に反映 | 完了 | `supabase/migrations/20260317000002_tables.sql` |
+| DT-199 | ~~P0~~ ✅ | Security | ~~**users RLS の `FOR ALL` が self-tier-escalation を許す**~~ **設計完了 (2026-03-28)**: `SELECT`/`UPDATE` 分離 policy + tier 変更拒否 BEFORE UPDATE trigger 定義 | 完了 | `supabase/migrations/20260317000005_rls.sql` |
+| DT-200 | ~~P0~~ ✅ | Security | ~~**`transactions.account_id` / `subscriptions.account_id` の所有権 IDOR 防止 trigger 不足**~~ **設計完了 (2026-03-28)**: 両テーブルで IDOR 防止 trigger 定義済み | 完了 | `supabase/migrations/20260317000002_tables.sql`, `supabase/migrations/20260317000005_rls.sql` |
+| DT-201 | ~~P0~~ ✅ | 予測 | ~~**variable costs が projection に未接続**~~ **設計完了 (2026-03-28)**: `estimateVariableCosts()` 定義、`buildTimeline` に反映 | 完了 | `docs/deep-dive/05-projection-engine.md` |
+| DT-202 | ~~P0~~ ✅ | 予測 | ~~**`fixed_cost_items` に `account_id` がなく口座別ルーティング不能**~~ **設計完了 (2026-03-28)**: `account_id` 追加、二重計上防止 filter ルール確定 | 完了 | `supabase/migrations/20260317000002_tables.sql`, `docs/deep-dive/05-projection-engine.md` |
+| DT-203 | ~~P0~~ ✅ | XDOC | ~~**`projection-response.schema.json` の `status` enum が実装と不整合**~~ **設計完了 (2026-03-28)**: 4値 uppercase enum に更新、required に追加 | 完了 | `docs/contracts/projection-response.schema.json` |
+| DT-204 | ~~P0~~ ✅ | XDOC | ~~**`projection-response.schema.json` に主要 projection fields 欠落**~~ **設計完了 (2026-03-28)**: 全 projection fields を schema に反映、interface と整合 | 完了 | `docs/contracts/projection-response.schema.json`, `docs/deep-dive/05-projection-engine.md` |
+| DT-205 | ~~P0~~ ✅ | Ops | ~~**Dead Man's Switch 自体の死活監視がない**~~ **設計完了 (2026-03-28)**: heartbeat パターンで DMS 自身の死活監視を設計 | 完了 | `supabase/migrations/20260317000007_cron_jobs.sql`, `DESIGN.md` |
+| DT-206 | ~~P0~~ ✅ | Ops | ~~**`pg_net` fire-and-forget により cron 失敗が不可視**~~ **設計完了 (2026-03-28)**: heartbeat パターン定義、DMS が freshness を検証 | 完了 | `supabase/migrations/20260317000007_cron_jobs.sql`, `DESIGN.md` |
 | DT-207 | P1 | Security | **OIDC JWT の `iat` / `nbf` 検証不足** | Pub/Sub OIDC 検証仕様に `iat` / `nbf` の許容スキューと fail-closed 動作が明文化されている | `docs/deep-dive/02-gmail-integration.md`, `supabase/functions/handle-email-webhook/index.ts` |
 | DT-208 | P1 | Security | **JWT `email` claim を Pub/Sub service account と照合していない** | `email` / `email_verified` / service account 一致条件が webhook 検証仕様に統合されている | `docs/deep-dive/02-gmail-integration.md` |
-| DT-209 | P1 | Security | **`service_role_key` が pg_cron SQL / pg_net ログへ露出しうる** | cron からの内部呼び出し認証を service_role 依存から切り離し、ログ露出しないシークレット経路に置換する方針が確定している | `supabase/migrations/20260317000007_cron_jobs.sql`, `DESIGN.md` |
-| DT-210 | P1 | Security | **`claimMessageId` が DB エラー時に fail-open する** | DB 例外時は `new` 扱いせず retryable error / alert に倒す制御が定義されている | `supabase/functions/handle-email-webhook/index.ts`, `docs/deep-dive/02-gmail-integration.md` |
-| DT-211 | P1 | Security | **LLM 出力を `JSON.parse` のみで受理している** | LLM 出力に schema validation を必須化し、検証失敗時の fail-closed 処理と監査ログが定義されている | `docs/deep-dive/01-email-parser.md`, `docs/deep-dive/05-projection-engine.md` |
-| DT-212 | P1 | Security | **`email_connections.email_address` が平文保存** | 保存要否、暗号化/ハッシュ化方針、表示用マスキング、削除フローが確定している | `DESIGN.md`, `supabase/migrations/20260317000002_tables.sql` |
-| DT-213 | P1 | 予測 | **`todayStr` の JST 変換が `toISOString()` 往復で脆い** | `Asia/Tokyo` 明示の date utility に統一し、UTC round-trip を禁止する規約が 05-projection-engine に反映されている | `docs/deep-dive/05-projection-engine.md` |
-| DT-214 | P1 | 予測 | **未設定カード1枚で projection 全体が `SETUP_REQUIRED` になる** | 未設定カードは partial degraded として扱い、全体 projection を止めずに不足分だけ明示する仕様が確定している | `docs/deep-dive/05-projection-engine.md` |
-| DT-215 | P1 | 予測 | **`minBar.balance` が存在しないフィールドを参照している** | `min_projected_balance` の算出元フィールドが actual schema/interface と一致している | `docs/deep-dive/05-projection-engine.md`, `docs/contracts/projection-response.schema.json` |
-| DT-216 | P1 | 予測 | **`amount >= 30000` 閾値で低所得ユーザーの payday 検知を落とす** | payday 推定閾値が固定金額ではなくユーザー履歴相対値ベースに置換されている | `docs/deep-dive/05-projection-engine.md` |
-| DT-217 | P1 | 予測 | **`computeNextBilling` が検知時刻基準で請求日を固定する** | 課金サイクル推定が transaction date / observed billing date 起点で定義されている | `docs/deep-dive/04-subscription-detection.md`, `docs/deep-dive/05-projection-engine.md` |
+| DT-209 | ~~P1~~ ✅ | Security | ~~**`service_role_key` が pg_cron SQL / pg_net ログへ露出しうる**~~ **設計完了 (2026-03-28)**: service_role_key を pg_cron SQL から除去、Vault 経由に変更 | 完了 | `supabase/migrations/20260317000007_cron_jobs.sql`, `DESIGN.md` |
+| DT-210 | ~~P1~~ ✅ | Security | ~~**`claimMessageId` が DB エラー時に fail-open する**~~ **設計完了 (2026-03-28)**: DB 例外時 fail-closed 制御を定義、retryable error に倒す | 完了 | `supabase/functions/handle-email-webhook/index.ts`, `docs/deep-dive/02-gmail-integration.md` |
+| DT-211 | ~~P1~~ ✅ | Security | ~~**LLM 出力を `JSON.parse` のみで受理している**~~ **設計完了 (2026-03-28)**: Zod validation schemas 導入、fail-closed 処理定義 | 完了 | `supabase/functions/_shared/llm-schemas.ts`, `docs/deep-dive/01-email-parser.md`, `docs/deep-dive/05-projection-engine.md` |
+| DT-212 | ~~P1~~ ✅ | Security | ~~**`email_connections.email_address` が平文保存**~~ **設計完了 (2026-03-28)**: email_address hash + mask migration 作成 | 完了 | `DESIGN.md`, `supabase/migrations/20260328000001_pii_email_hash.sql` |
+| DT-213 | ~~P1~~ ✅ | 予測 | ~~**`todayStr` の JST 変換が `toISOString()` 往復で脆い**~~ **設計完了 (2026-03-28)**: `_shared/date-jst.ts` JST date utility 作成、UTC round-trip 禁止 | 完了 | `supabase/functions/_shared/date-jst.ts`, `docs/deep-dive/05-projection-engine.md` |
+| DT-214 | ~~P1~~ ✅ | 予測 | ~~**未設定カード1枚で projection 全体が `SETUP_REQUIRED` になる**~~ **設計完了 (2026-03-28)**: partial degraded 扱い、SETUP_REQUIRED ではなく不足分を明示 | 完了 | `docs/deep-dive/05-projection-engine.md` |
+| DT-215 | ~~P1~~ ✅ | 予測 | ~~**`minBar.balance` が存在しないフィールドを参照している**~~ **設計完了 (2026-03-28)**: `minBar.balance` → `end_balance` に修正 | 完了 | `docs/deep-dive/05-projection-engine.md`, `docs/contracts/projection-response.schema.json` |
+| DT-216 | ~~P1~~ ✅ | 予測 | ~~**`amount >= 30000` 閾値で低所得ユーザーの payday 検知を落とす**~~ **設計完了 (2026-03-28)**: payday 閾値を除去、next_income に汎化 | 完了 | `docs/deep-dive/05-projection-engine.md` |
+| DT-217 | ~~P1~~ ✅ | 予測 | ~~**`computeNextBilling` が検知時刻基準で請求日を固定する**~~ **設計完了 (2026-03-28)**: transaction date 起点に変更 | 完了 | `docs/deep-dive/04-subscription-detection.md`, `docs/deep-dive/05-projection-engine.md` |
 | DT-218 | P1 | 予測 | **カード締め期間境界が UTC midnight 基準** | 締め日・請求日・期間境界がすべて JST midnight 基準で統一されている | `docs/deep-dive/05-projection-engine.md` |
-| DT-219 | P1 | UX | **bootstrap 時のサブスク金額推定が最古トランザクション額固定** | 価格改定を反映できるよう、bootstrap 時は最新額または複数回観測の代表値を採用する仕様が定義されている | `docs/deep-dive/04-subscription-detection.md` |
-| DT-220 | P1 | UX | **未設定カードの利用額が projection から丸ごと脱落する** | 未設定カードでも safety-side の暫定支出見積りを projection に含めるルールが定義されている | `docs/deep-dive/05-projection-engine.md` |
-| DT-221 | P1 | UX | **Pub/Sub fallback polling cron が設計にあるのに cron SQL にない** | fallback polling job の起動条件・頻度・停止条件が cron 定義に反映されている | `docs/deep-dive/02-gmail-integration.md`, `supabase/migrations/20260317000007_cron_jobs.sql` |
-| DT-222 | P1 | UX | **bootstrap で止まった接続を DMS が検知できない (`last_synced_at IS NULL`)** | bootstrap 未完了接続専用の stale 条件と alert ルールが DMS に追加されている | `supabase/migrations/20260317000007_cron_jobs.sql`, `DESIGN.md` |
-| DT-223 | P1 | UX | **`fixed_cost_items.next_billing_at` を進める cron がなく、請求日後に固定費が消える** | fixed cost 向けの advancement job か同等の date advancement 仕様が定義されている | `DESIGN.md`, `docs/deep-dive/05-projection-engine.md` |
-| DT-224 | P1 | XDOC | **`_shared/api.ts` の ErrorCode 列挙が不足している** | shared types と public API docs の error code 列挙が一貫している | `supabase/functions/_shared/api.ts`, `docs/deep-dive/07-public-api.md` |
-| DT-225 | P1 | XDOC | **`ProactiveInboxProactiveInboxCrawlRequest` 型名重複** | request/response 型名が deep-dive, 実装, shared types で一貫している | `supabase/functions/proactive-inbox-crawl/index.ts`, `docs/deep-dive/02-gmail-integration.md` |
-| DT-226 | P1 | XDOC | **cron が `update-projection` / `nudge-balance-update` を呼ぶが実体定義が曖昧** | 呼び出し先 Edge Function 名・存在有無・責務が docs と cron SQL で完全一致している | `supabase/migrations/20260317000007_cron_jobs.sql`, `DESIGN.md` |
-| DT-227 | P1 | Ops | **`claimMessageId` の `.update()` が `count:'exact'` なしで常に retry 判定になる** | claim ロジックの戻り値判定条件が Supabase API 仕様と一致し、retry 誤判定が起きないことが設計に明記されている | `supabase/functions/handle-email-webhook/index.ts` |
-| DT-228 | P1 | Ops | **webhook handler と `renew-gmail-watch` 間で OAuth token refresh race がある** | token refresh の single-flight / compare-and-swap / version check のいずれかで競合回避方式が確定している | `docs/deep-dive/02-gmail-integration.md`, `supabase/functions/renew-gmail-watch/index.ts` |
+| DT-219 | ~~P1~~ ✅ | UX | ~~**bootstrap 時のサブスク金額推定が最古トランザクション額固定**~~ **設計完了 (2026-03-28)**: bootstrap 時は最新 transaction 額を採用 | 完了 | `docs/deep-dive/04-subscription-detection.md` |
+| DT-220 | ~~P1~~ ✅ | UX | ~~**未設定カードの利用額が projection から丸ごと脱落する**~~ **設計完了 (2026-03-28)**: unlinked card spending を estimated_card_spend として projection に含める | 完了 | `docs/deep-dive/05-projection-engine.md` |
+| DT-221 | ~~P1~~ ✅ | UX | ~~**Pub/Sub fallback polling cron が設計にあるのに cron SQL にない**~~ **設計完了 (2026-03-28)**: proactive-inbox-crawl cron schedule 追加 | 完了 | `docs/deep-dive/02-gmail-integration.md`, `supabase/migrations/20260317000007_cron_jobs.sql` |
+| DT-222 | ~~P1~~ ✅ | UX | ~~**bootstrap で止まった接続を DMS が検知できない (`last_synced_at IS NULL`)**~~ **設計完了 (2026-03-28)**: bootstrap stale 検知条件を DMS に追加 | 完了 | `supabase/migrations/20260317000007_cron_jobs.sql`, `DESIGN.md` |
+| DT-223 | ~~P1~~ ✅ | UX | ~~**`fixed_cost_items.next_billing_at` を進める cron がなく、請求日後に固定費が消える**~~ **設計完了 (2026-03-28)**: fixed_cost_items advancement cron 定義 | 完了 | `DESIGN.md`, `docs/deep-dive/05-projection-engine.md` |
+| DT-224 | ~~P1~~ ✅ | XDOC | ~~**`_shared/api.ts` の ErrorCode 列挙が不足している**~~ **設計完了 (2026-03-28)**: Public/Internal ErrorCode 分離、列挙を一貫化 | 完了 | `supabase/functions/_shared/api.ts`, `docs/deep-dive/07-public-api.md` |
+| DT-225 | ~~P1~~ ✅ | XDOC | ~~**`ProactiveInboxProactiveInboxCrawlRequest` 型名重複**~~ **設計完了 (2026-03-28)**: 型名を `ProactiveInboxCrawlRequest` に統一 | 完了 | `supabase/functions/proactive-inbox-crawl/index.ts`, `docs/deep-dive/02-gmail-integration.md` |
+| DT-226 | ~~P1~~ ✅ | XDOC | ~~**cron が `update-projection` / `nudge-balance-update` を呼ぶが実体定義が曖昧**~~ **設計完了 (2026-03-28)**: 両 Edge Function scaffolded、責務を docs と cron SQL で一致 | 完了 | `supabase/migrations/20260317000007_cron_jobs.sql`, `DESIGN.md` |
+| DT-227 | ~~P1~~ ✅ | Ops | ~~**`claimMessageId` の `.update()` が `count:'exact'` なしで常に retry 判定になる**~~ **設計完了 (2026-03-28)**: `.count('exact')` 追加、retry 判定を修正 | 完了 | `supabase/functions/handle-email-webhook/index.ts` |
+| DT-228 | ~~P1~~ ✅ | Ops | ~~**webhook handler と `renew-gmail-watch` 間で OAuth token refresh race がある**~~ **設計完了 (2026-03-28)**: token refresh compare-and-swap 方式で競合回避 | 完了 | `docs/deep-dive/02-gmail-integration.md`, `supabase/functions/renew-gmail-watch/index.ts` |
 | DT-229 | P2 | Security | **JWT / webhook replay hardening の追加検討** | replay 耐性強化案の採否とコストが整理され、Phase 5+ に編入されている | `docs/deep-dive/02-gmail-integration.md` |
 | DT-230 | P2 | Security | **webhook / cron 系シークレットのローテーション監査強化** | ローテーション周期・監査ログ・切替手順が定義されている | `DESIGN.md` |
 | DT-231 | P2 | Security | **長期セキュリティ監査ログ粒度の追加** | セキュリティイベントの保持粒度と retention が設計されている | `DESIGN.md` |
