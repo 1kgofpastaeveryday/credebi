@@ -1,7 +1,7 @@
 import { err, newRequestId, ok, type ApiErr, type ApiOk } from "../_shared/api.ts";
 
 // DT-007: Type name aligned with docs/deep-dive/02-gmail-integration.md §10c
-type ProactiveInboxProactiveInboxCrawlRequest = {
+type ProactiveInboxCrawlRequest = {
   user_id?: string;
   target_month?: string;
   max_users?: number;
@@ -17,18 +17,28 @@ export type ProactiveInboxCrawlResponse = ApiOk<{
 }> | ApiErr;
 
 /**
- * Internal function auth: verify that the caller provides the service_role key.
- * These functions are called by pg_cron or admin tools, never by end users.
- * The Authorization header must be "Bearer <SUPABASE_SERVICE_ROLE_KEY>".
+ * Internal function auth (caller authentication).
+ *
+ * Caller auth: INTERNAL_SYNC_SECRET — a dedicated secret shared between
+ *   pg_cron / admin tools and internal Edge Functions. This proves the
+ *   caller is an authorized internal system, NOT an end user.
+ *
+ * DB auth: The function uses the service_role Supabase client internally
+ *   to bypass RLS for batch operations. That is a separate concern from
+ *   who is allowed to invoke this function.
+ *
+ * Separation rationale: service_role_key grants full DB access and should
+ *   never appear in HTTP headers over the network. INTERNAL_SYNC_SECRET
+ *   is a caller-only credential with no DB privileges.
  */
 function isAuthorized(req: Request): boolean {
   const authHeader = req.headers.get("authorization");
   if (!authHeader) return false;
   const match = authHeader.match(/^Bearer\s+(.+)$/i);
   if (!match) return false;
-  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!serviceKey) return false; // fail-closed: no key configured = reject
-  return match[1] === serviceKey;
+  const syncSecret = Deno.env.get("INTERNAL_SYNC_SECRET");
+  if (!syncSecret) return false; // fail-closed: no secret configured = reject
+  return match[1] === syncSecret;
 }
 
 // TODO: users.tier を取得

@@ -525,6 +525,36 @@ async function refreshTokenIfNeeded(
 }
 ```
 
+### 5a. Token Refresh Race Prevention (DT-228: Compare-and-Swap)
+
+When two concurrent Edge Function invocations both detect an expired `access_token`
+for the same `email_connection`, a naive UPDATE creates a race:
+
+1. Worker A refreshes → gets `token_A`, writes to Vault, updates `access_token_expires_at`
+2. Worker B refreshes → gets `token_B`, writes to Vault, **overwrites** `token_A`
+3. Worker A's token is now invalid (Google revokes the previous access_token on refresh)
+
+**Solution: conditional UPDATE (compare-and-swap)**
+
+After refreshing a token, update `email_connections` with a WHERE guard on the
+old expiry value:
+
+```sql
+UPDATE email_connections
+SET vault_secret_id     = $new_vault_secret_id,
+    access_token_expires_at = $new_expiry
+WHERE id = $conn_id
+  AND access_token_expires_at = $old_expiry;
+```
+
+- If the UPDATE returns **1 row**: this worker won the race. Proceed normally.
+- If the UPDATE returns **0 rows**: another worker already refreshed. Re-read the
+  connection row to get the latest `vault_secret_id` and use the already-refreshed
+  token. Do **not** call Google's token endpoint again.
+
+This guarantees exactly one writer succeeds. The losing worker reuses the winner's
+token at zero extra cost (no wasted refresh against Google's 25-call/6h limit).
+
 ## 6. email_connections テーブル拡張
 
 ```sql

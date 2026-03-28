@@ -232,7 +232,7 @@ async function claimMessageId(messageId: string): Promise<ClaimResult> {
       .from("processed_webhook_messages")
       .update({
         locked_until: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-      })
+      }, { count: "exact" })
       .eq("message_id", messageId)
       .eq("status", "pending")
       .lt("locked_until", new Date().toISOString());
@@ -241,9 +241,11 @@ async function claimMessageId(messageId: string): Promise<ClaimResult> {
     return "retry";
   }
 
-  // Other DB errors — treat as new to avoid silent drops
-  console.error("claimMessageId error:", insertError);
-  return "new";
+  // fail-closed: DB errors during claim = retry, not process as new.
+  // If we treat DB errors as "new", a broken DB lets every message through
+  // unguarded — violating idempotency. Throwing lets Pub/Sub retry later.
+  console.error("claimMessageId DB error (will retry):", insertError);
+  throw new Error(`claimMessageId DB error: ${insertError.code} ${insertError.message}`);
 }
 
 async function confirmMessageId(messageId: string): Promise<void> {

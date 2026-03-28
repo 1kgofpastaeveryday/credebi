@@ -178,17 +178,27 @@ interface HourlyRatePeriod {
   effective_to: string | null    // null = 現在有効
 }
 
+// DT-040: Result type for daily wage calculation (error accumulation, not throw)
+type DailyWageResult = {
+  wage: { base: number; overtime: number; night: number; holiday: number } | null
+  error?: string  // e.g. "No rate period for 2026-03-15"
+}
+
 // 日次勤怠から日ごとの給与を算出
+// DT-040: Returns result type instead of throwing on rate period gap.
+// Missing rate periods are accumulated as errors in the caller, not fatal.
 function calcDailyWage(
   record: DailyWorkRecord,
   ratePeriods: HourlyRatePeriod[]
-): { base: number; overtime: number; night: number; holiday: number } {
+): DailyWageResult {
   // 勤務日の有効レートを取得
   const rate = ratePeriods.find(r =>
     record.date >= r.effective_from &&
     (r.effective_to === null || record.date <= r.effective_to)
   )
-  if (!rate) throw new Error(`No rate period for ${record.date}`)
+  if (!rate) {
+    return { wage: null, error: `No rate period for ${record.date}` }
+  }
 
   const normalMins = record.total_work_mins - record.total_overtime_mins
   const base = Math.floor((normalMins / 60) * rate.hourly_rate)
@@ -202,7 +212,7 @@ function calcDailyWage(
     (record.holiday_work_mins / 60) * rate.hourly_rate * rate.holiday_multiplier
   )
 
-  return { base, overtime, night, holiday }
+  return { wage: { base, overtime, night, holiday } }
 }
 
 async function calculateShiftIncome(
@@ -225,10 +235,17 @@ async function calculateShiftIncome(
   // clock_in_at が存在する日のみ = 実出勤日
   const workedRecords = dailyRecords.filter(r => r.clock_in_at !== null)
 
+  // DT-040: Accumulate errors instead of aborting on first rate gap
   let wageTotal = 0
+  const errors: string[] = []
   for (const record of workedRecords) {
-    const daily = calcDailyWage(record, ratePeriods)
-    wageTotal += daily.base + daily.overtime + daily.night + daily.holiday
+    const result = calcDailyWage(record, ratePeriods)
+    if (result.wage) {
+      wageTotal += result.wage.base + result.wage.overtime
+        + result.wage.night + result.wage.holiday
+    } else {
+      errors.push(result.error!)
+    }
   }
 
   // Layer 2: 手当
@@ -259,7 +276,14 @@ async function calculateShiftIncome(
     day_of_month: conn.payday ?? 25,
     is_estimated: true,
     source: 'shift_calc',
-    confidence: calculateConfidence(workedRecords, remainingHours),
+    // DT-040: Confidence reduction when some days have no rate period
+    confidence: (() => {
+      const baseConfidence = calculateConfidence(workedRecords, remainingHours)
+      const errorPenalty = errors.length > 0
+        ? 0.5 * (1 - errors.length / workedRecords.length)
+        : 1.0
+      return baseConfidence * errorPenalty
+    })(),
     breakdown: {
       wage_total: wageTotal,           // Layer 1 (検証済み高精度)
       remaining_wage: remainingWage,   // Layer 1 推定分
@@ -269,6 +293,10 @@ async function calculateShiftIncome(
       net_pay: netPay,
       worked_days: workedRecords.length,
       rate_periods_used: ratePeriods.length,
+      // DT-040: Error accumulation for days with missing rate periods
+      error_days: errors.length,
+      skipped_dates: errors.map(e => e.match(/\d{4}-\d{2}-\d{2}/)?.[0]).filter(Boolean),
+      // UI note: error_days > 0 の場合、「一部の勤務日の時給情報が見つかりません」を表示
     },
   }
 }
@@ -294,23 +322,33 @@ async function calculateShiftIncome(
 ### 3d. 残りシフト時間の推定
 
 ```typescript
+// DT-039/DT-111: Accept DailyWorkRecord[] instead of WorkRecordSummary.
+// Aggregation is done internally so the caller doesn't need a separate summary type.
 function estimateRemainingHours(
-  summary: WorkRecordSummary,
+  records: DailyWorkRecord[],
   today: Date,
   year: number,
   month: number,
 ): { regular: number; overtime: number } {
   const daysInMonth = new Date(year, month, 0).getDate()
   const dayOfMonth = today.getDate()
-  const workedDays = summary.total_work_days ?? dayOfMonth
+
+  // Internal aggregation from daily records
+  const workedDays = records.length
+  const totalWorkHours = records.reduce(
+    (sum, r) => sum + r.total_work_mins / 60, 0
+  )
+  const totalOvertimeHours = records.reduce(
+    (sum, r) => sum + r.total_overtime_mins / 60, 0
+  )
 
   if (workedDays === 0) {
     return { regular: 0, overtime: 0 }
   }
 
   // 平均日次勤務時間から残り日数分を推定
-  const avgDailyHours = summary.total_work_hours / workedDays
-  const avgDailyOvertime = summary.overtime_hours / workedDays
+  const avgDailyHours = totalWorkHours / workedDays
+  const avgDailyOvertime = totalOvertimeHours / workedDays
 
   // 残りの営業日数 (土日除外の簡易版。祝日は未考慮)
   const remainingWorkDays = countWorkDays(today, new Date(year, month, 0))

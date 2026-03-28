@@ -1,7 +1,7 @@
 -- ============================================================
 -- pg_cron job definitions
 -- Requires: pg_cron, pg_net extensions
--- Requires: app.supabase_url and app.service_role_key DB parameters
+-- Requires: app.supabase_url and app.internal_sync_secret DB parameters
 -- ============================================================
 
 -- Seed heartbeat expectations. Edge Functions must update last_success_at by calling
@@ -58,7 +58,7 @@ SELECT cron.schedule(
   '0 2 * * *',
   $$SELECT net.http_post(
     url := current_setting('app.supabase_url') || '/functions/v1/renew-gmail-watch',
-    headers := jsonb_build_object('Authorization', 'Bearer ' || current_setting('app.service_role_key')),
+    headers := jsonb_build_object('Authorization', 'Bearer ' || current_setting('app.internal_sync_secret')),
     body := '{}'::jsonb
   )$$
 );
@@ -72,7 +72,7 @@ SELECT cron.schedule(
   '30 3 * * *',
   $$SELECT net.http_post(
     url := current_setting('app.supabase_url') || '/functions/v1/update-projection',
-    headers := jsonb_build_object('Authorization', 'Bearer ' || current_setting('app.service_role_key')),
+    headers := jsonb_build_object('Authorization', 'Bearer ' || current_setting('app.internal_sync_secret')),
     body := '{}'::jsonb
   )$$
 );
@@ -193,7 +193,7 @@ SELECT cron.schedule(
   '0 0 * * *',
   $$SELECT net.http_post(
     url := current_setting('app.supabase_url') || '/functions/v1/nudge-balance-update',
-    headers := jsonb_build_object('Authorization', 'Bearer ' || current_setting('app.service_role_key')),
+    headers := jsonb_build_object('Authorization', 'Bearer ' || current_setting('app.internal_sync_secret')),
     body := '{}'::jsonb
   )$$
 );

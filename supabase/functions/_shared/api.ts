@@ -1,4 +1,13 @@
-export type ErrorCode =
+export type PublicErrorCode =
+  | "UNAUTHORIZED"
+  | "FORBIDDEN"
+  | "NOT_FOUND"
+  | "CONFLICT"
+  | "VALIDATION_ERROR"
+  | "RATE_LIMITED"
+  | "INTERNAL_ERROR";
+
+export type InternalErrorCode =
   | "UNAUTHORIZED"
   | "INVALID_PAYLOAD"
   | "TOKEN_REFRESH_FAILED"
@@ -6,6 +15,8 @@ export type ErrorCode =
   | "HISTORY_ID_EXPIRED"
   | "RATE_LIMITED"
   | "INTERNAL_ERROR";
+
+export type ErrorCode = PublicErrorCode | InternalErrorCode;
 
 export type ApiOk<T> = {
   ok: true;

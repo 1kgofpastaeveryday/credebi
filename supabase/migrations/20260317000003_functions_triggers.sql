@@ -303,16 +303,43 @@ CREATE OR REPLACE FUNCTION update_history_id_monotonic(
   p_new_history_id TEXT
 ) RETURNS BOOLEAN AS $$
 DECLARE
-  updated INT;
+  current_last_history_id TEXT;
+  current_last_history_id_bigint BIGINT;
+  new_history_id_bigint BIGINT;
 BEGIN
+  SELECT last_history_id
+  INTO current_last_history_id
+  FROM email_connections
+  WHERE id = p_connection_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN FALSE;
+  END IF;
+
+  new_history_id_bigint := p_new_history_id::bigint;
+
+  IF current_last_history_id IS NOT NULL THEN
+    BEGIN
+      current_last_history_id_bigint := current_last_history_id::bigint;
+    EXCEPTION
+      WHEN invalid_text_representation THEN
+        RAISE WARNING 'update_history_id_monotonic skipped for connection %, invalid last_history_id value: %',
+          p_connection_id, current_last_history_id;
+        RETURN FALSE;
+    END;
+
+    IF current_last_history_id_bigint >= new_history_id_bigint THEN
+      RETURN FALSE;
+    END IF;
+  END IF;
+
   UPDATE email_connections
   SET last_history_id = p_new_history_id,
       last_synced_at = now()
-  WHERE id = p_connection_id
-    AND (last_history_id IS NULL
-         OR last_history_id::bigint < p_new_history_id::bigint);
-  GET DIAGNOSTICS updated = ROW_COUNT;
-  RETURN updated > 0;
+  WHERE id = p_connection_id;
+
+  RETURN TRUE;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 

@@ -449,7 +449,7 @@ async function deleteTransaction(id: string, auth: AuthResult) {
 email_detect で自動取得された取引: merchant_name, category_id, description のみ変更可。
 manual 取引: 上記 + amount, account_id, transacted_at も変更可。
 
-immutable フィールドがPATCHに含まれている場合は `INVALID_PAYLOAD` を返す。
+immutable フィールドがPATCHに含まれている場合は `VALIDATION_ERROR` を返す。
 
 ### 4e. Mutation Audit Trail
 

@@ -269,6 +269,7 @@ async function createOrUpdateSubscription(
   data: {
     name: string, amount: number, billing_cycle: string,
     account_id: string, detected_from: string,
+    last_transaction_date: string,  // YYYY-MM-DD of most recent charge
     parsed_email_id?: string  // SEC-R4-004: source traceability
   }
 ): Promise<Subscription> {
@@ -307,7 +308,8 @@ async function createOrUpdateSubscription(
   // XDOC-R4-013: Compute next_billing_at so the subscription is usable for projection.
   // Without this, next_billing_at is NULL → fixed cost filter can't de-duplicate
   // against card charges, risking double-counting.
-  const nextBilling = computeNextBilling(data.billing_cycle)
+  // Using transaction date ensures billing cycle aligns with actual charge pattern, not detection time
+  const nextBilling = computeNextBilling(data.last_transaction_date, data.billing_cycle)
 
   const { data: created } = await supabase
     .from('subscriptions')
@@ -321,17 +323,25 @@ async function createOrUpdateSubscription(
   return created
 }
 
-// XDOC-R4-013: Compute the next billing date from the current date and billing cycle.
-function computeNextBilling(billingCycle: string): string {
-  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }))
-  const next = new Date(now)
+/**
+ * Compute next expected billing date based on the most recent observed
+ * transaction date, NOT the current time.
+ *
+ * Using transaction date ensures billing cycle aligns with actual charge pattern,
+ * not detection time.
+ */
+function computeNextBilling(
+  lastTransactionDate: string,  // YYYY-MM-DD of most recent charge
+  billingCycle: 'monthly' | 'yearly'
+): string {
+  const last = new Date(lastTransactionDate + 'T00:00:00+09:00')
+  const next = new Date(last)
   if (billingCycle === 'yearly') {
     next.setFullYear(next.getFullYear() + 1)
   } else {
-    // monthly (default)
     next.setMonth(next.getMonth() + 1)
   }
-  return next.toISOString().slice(0, 10)  // DATE format
+  return next.toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' })
 }
 
 function calculateIntervals(transactions: Transaction[]): number[] {

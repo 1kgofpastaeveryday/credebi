@@ -1461,11 +1461,99 @@ iOSアプリ        → Supabase Client SDK (anon key + RLS)
 原則:
 - anon key はクライアントに露出するが、RLSにより自分のデータのみアクセス可
 - service_role key は Edge Function 内のみ。クライアントには絶対に渡さない
+- **内部関数の認証分離 (caller auth vs DB auth)**:
+  - `INTERNAL_SYNC_SECRET`: pg_cron / 管理ツールが内部 Edge Function を呼び出す際の
+    caller認証用。HTTP Authorization ヘッダに載せる。DB権限は持たない。
+  - `SUPABASE_SERVICE_ROLE_KEY`: Edge Function 内部で DB にアクセスする際の service_role
+    クライアント生成用。RLS をバイパスしてバッチ処理を行う。HTTPヘッダには載せない。
+  - 分離理由: service_role_key はフルDB権限を持つため、ネットワーク上の HTTP ヘッダに
+    露出させるべきでない。caller認証にはDB権限不要の専用シークレットを使う。
+  - `scopedQuery()` パターン (`_shared/db.ts`): service_role クライアント使用時も
+    全ユーザーデータクエリに user_id フィルタを強制する defense-in-depth レイヤー。
+    service_role はコードバグがあればフルアクセス可能なため、これはハード境界ではなく
+    コードレビューで担保する規約。
 - APIキー認証: `crd_live_` prefix + SHA-256ハッシュ照合 → user_id解決 → RLS付きクエリ
   - APIキーでもservice_roleを直接使わず、カスタムJWT経由でRLSを通す (テナント分離保証)
   - Tier別レート制限 (Free:30/min, Standard:60, Pro:120, Owner:600)
 - 詳細: `docs/deep-dive/07-public-api.md`
 ```
+
+### 6d. PII Retention & Deletion Policy
+
+**Design goal**: minimize stored PII surface area while preserving functionality.
+
+#### Data classification by PII sensitivity
+
+| Data | Storage | Rationale |
+|------|---------|-----------|
+| `email_address` | Transitioning to **hash + masked display**. `email_lookup_hash` (SHA-256 of normalized email) for dedup; `email_display` (e.g. `s***@gmail.com`) for UI. Plaintext column to be dropped after backfill migration. | Privacy by design — lookup does not require reversible storage. |
+| OAuth tokens (Gmail, freee) | **Supabase Vault** (pgsodium encrypted). Never stored in plaintext columns. | Already designed in 6b. |
+| `parsed_emails.subject`, `parsed_emails.sender`, `merchant_name` | **Plaintext**, protected by RLS (`user_id = auth.uid()`). | Tradeoff acknowledged: DB backups and superadmin access can read this data. Acceptable for a personal finance app where the user owns the data and these fields are essential for transaction identification. |
+| Email body | **Never stored**. Parsed and immediately discarded; only `raw_hash` retained. | Established in 6b. |
+| Card numbers, bank account numbers, passwords | **Never stored**. | Established in 6b. |
+
+#### Account deletion flow
+
+1. User initiates deletion from iOS app settings.
+2. Edge Function sets `users.deleted_at = now()` (soft delete). User is signed out.
+3. **30-day grace period**: user can log back in to cancel. Data is invisible to queries (RLS policy filters `deleted_at IS NULL`).
+4. After 30 days, `pg_cron` job executes `DELETE FROM users WHERE deleted_at < now() - interval '30 days'`.
+5. `ON DELETE CASCADE` propagates to all child tables (email_connections, financial_accounts, transactions, parsed_emails, subscriptions, monthly_summaries, projected_incomes, income_connections, shift_records, fixed_cost_items, expected_email_jobs, system_alerts, api_keys, parse_failures, pending_ec_correlations, user_suggestion_stats, suggestion_feedback, api_idempotency_keys).
+6. **Vault cleanup**: Edge Function explicitly calls `vault.delete_secret()` for each `vault_secret_id` referenced by the user's `email_connections` and `income_connections` before the hard delete. CASCADE cannot reach Vault — this must be explicit.
+7. `processed_webhook_messages` are not user-scoped and are cleaned up by TTL-based expiry independently.
+
+#### Retention policy
+
+| Scenario | Retention |
+|----------|-----------|
+| Active user | Indefinite — data retained as long as the account exists. |
+| Post-deletion (soft) | 30 days grace period, then hard purge via CASCADE + Vault cleanup. |
+| `processed_webhook_messages` | 90-day TTL (no user data, only message IDs). |
+
+#### Operational exposure rules
+
+- **Logs must NOT contain PII.** Edge Functions must never log email content, email addresses, merchant names, or financial amounts.
+- **Structured logging only**: log `user_id`, `email_connection_id`, `transaction_id` (UUIDs) — never the underlying data.
+- **Error messages**: sanitize before logging. If an email parse fails, log the failure reason and `raw_hash`, never the subject or sender.
+- **LLM calls**: apply `redactPII` before sending any user data to external LLM APIs (already referenced in 6b).
+
+### 6e. LLM Output Trust Boundary
+
+All LLM responses (Gemini Flash-Lite, Claude Sonnet, GPT-5.2) are treated as
+**untrusted external input**, equivalent to user-submitted form data. An LLM
+that hallucinates, is prompt-injected, or returns malformed JSON must never
+corrupt the database or bypass validation.
+
+**Validation layer**: `supabase/functions/_shared/llm-schemas.ts`
+
+- Zod schemas (`ParsedTransactionSchema`, `ParsedEmailResponseSchema`) define
+  the exact shape and constraints of LLM output.
+- Every LLM response MUST pass through `validateLlmOutput()` before any
+  database write. No exceptions.
+
+**Failure mode**:
+
+- Validation failure → transaction is saved with `category = NULL`
+  (preserving the raw financial data) and the failure is logged to the
+  `parse_failures` table with the Zod error details and a truncated copy
+  of the raw LLM output (first 500 chars).
+- This ensures no transaction is silently dropped (Design Principle #1)
+  while preventing malformed LLM output from propagating.
+
+**Prompt injection defense**:
+
+- LLM output must never contain SQL, column names, or function names.
+- The Zod schema enforces this structurally: `merchant_name` is max 200 chars,
+  `amount` must be a positive integer, `transacted_at` must match an ISO date
+  regex, `currency` is a literal `'JPY'`. There is no code path from LLM output
+  to dynamic query construction.
+
+**Consecutive failure alerting**:
+
+- 3 consecutive validation failures for a single `email_connection` →
+  insert a `system_alerts` record (type: `llm_validation_degraded`).
+- This surfaces model regressions or prompt injection attacks before they
+  accumulate silently.
 
 ---
 
@@ -1954,10 +2042,12 @@ CREATE EXTENSION IF NOT EXISTS pg_cron;
 
 -- 3. DB parameters の設定 (Supabase Dashboard > Settings > Database または SQL)
 ALTER DATABASE postgres SET app.supabase_url = 'https://<project-ref>.supabase.co';
-ALTER DATABASE postgres SET app.service_role_key = '<service-role-key>';
--- ⚠️ service_role_key はDB parameterに平文保存されるため、
+ALTER DATABASE postgres SET app.internal_sync_secret = '<internal-sync-secret>';
+-- ⚠️ internal_sync_secret はDB parameterに平文保存されるため、
 --    Supabase Vault 経由で読む方が望ましいが、pg_cron SQL内では
 --    current_setting() しか使えないため、この方法が現実的。
+-- NOTE: service_role_key はDB parameterに保存しない。Edge Function内では
+--    SUPABASE_SERVICE_ROLE_KEY env var から直接読む (Supabase が自動注入)。
 
 -- 4. 起動検証クエリ (migration 適用後に実行)
 DO $$
@@ -1975,9 +2065,9 @@ BEGIN
     RAISE EXCEPTION 'app.supabase_url is not set';
   END IF;
 
-  -- app.service_role_key が設定されているか
-  IF current_setting('app.service_role_key', true) IS NULL THEN
-    RAISE EXCEPTION 'app.service_role_key is not set';
+  -- app.internal_sync_secret が設定されているか
+  IF current_setting('app.internal_sync_secret', true) IS NULL THEN
+    RAISE EXCEPTION 'app.internal_sync_secret is not set';
   END IF;
 
   RAISE NOTICE 'All deployment prerequisites verified.';
@@ -2068,7 +2158,7 @@ SELECT cron.schedule(
   '0 2 * * *',  -- 毎日 02:00 UTC (11:00 JST)
   $$SELECT net.http_post(
     url := current_setting('app.supabase_url') || '/functions/v1/renew-gmail-watch',
-    headers := jsonb_build_object('Authorization', 'Bearer ' || current_setting('app.service_role_key')),
+    headers := jsonb_build_object('Authorization', 'Bearer ' || current_setting('app.internal_sync_secret')),
     body := '{}'::jsonb
   )$$
 );
@@ -2082,7 +2172,7 @@ SELECT cron.schedule(
   '30 3 * * *',  -- 毎日 03:30 UTC (12:30 JST)
   $$SELECT net.http_post(
     url := current_setting('app.supabase_url') || '/functions/v1/update-projection',
-    headers := jsonb_build_object('Authorization', 'Bearer ' || current_setting('app.service_role_key')),
+    headers := jsonb_build_object('Authorization', 'Bearer ' || current_setting('app.internal_sync_secret')),
     body := '{}'::jsonb
   )$$
 );
@@ -2210,7 +2300,7 @@ SELECT cron.schedule(
   '0 0 * * *',  -- 毎日 00:00 UTC (09:00 JST)
   $$SELECT net.http_post(
     url := current_setting('app.supabase_url') || '/functions/v1/nudge-balance-update',
-    headers := jsonb_build_object('Authorization', 'Bearer ' || current_setting('app.service_role_key')),
+    headers := jsonb_build_object('Authorization', 'Bearer ' || current_setting('app.internal_sync_secret')),
     body := '{}'::jsonb
   )$$
 );

@@ -220,9 +220,9 @@ interface CardChargeCoverage {
 // CRITICAL:       red — aggregate deficit, no fix without external funds
 
 async function calculateProjection(userId: string): Promise<Projection> {
-  const now = new Date()
-  const jstNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }))
-  const todayStr = jstNow.toISOString().slice(0, 10)
+  import { todayJST, nowJST, addDaysJST } from './_shared/date-jst.ts'
+  const todayStr = todayJST()
+  const jstNow = nowJST()
 
   // ── 1. Fetch all accounts ──
   const bankAccounts = await supabase
@@ -550,9 +550,13 @@ async function calculateProjection(userId: string): Promise<Projection> {
   //   3. Prompt always shows ALL bank accounts + "銀行口座を追加" option
   //      (the card may settle from an unregistered bank account)
   // This avoids hard-blocking all existing users on migration day.
+  //
+  // DT-214: hasUnscheduledCards no longer causes SETUP_REQUIRED.
+  // Unscheduled cards are already in stale_sources as card_schedule_missing:{name}.
+  // They degrade to estimated spend (see estimateUnlinkedCardSpend below), not hard-block.
   const setupRequired = !anyBalanceUpdated
     || (emailRequired && !bootstrapDone)
-    || hasUnscheduledCards
+    // hasUnscheduledCards removed — unscheduled cards degrade to estimated spend, not hard-block
     // hasUnsettledCards removed — unsettled cards degrade to aggregate-only, not hard-block
 
   // DT-159: WARNING vs CRITICAL distinction
@@ -564,8 +568,8 @@ async function calculateProjection(userId: string): Promise<Projection> {
     status = 'SETUP_REQUIRED'
   } else if (aggregateDanger) {
     status = 'CRITICAL'  // 全口座合計でも0割れ — 資金移動では解決不可
-  } else if (anyAccountDanger) {
-    status = 'WARNING'   // 口座単体で0割れだが合計は足りる — 口座間移動で解決可能
+  } else if (anyAccountDanger || hasUnscheduledCards) {
+    status = 'WARNING'   // 口座単体で0割れ or 未設定カードあり — 完全精度ではない
   } else {
     status = 'SAFE'
   }
@@ -602,7 +606,7 @@ async function estimateVariableCosts(
   bankAccounts: FinancialAccount[],
   cardAccounts: FinancialAccount[],
 ): Promise<EstimatedVariableCost[]> {
-  const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Tokyo' })
+  const todayStr = todayJST()
   const summaries = await supabase
     .from('monthly_summaries')
     .select('year_month, variable_costs, uncategorized')
@@ -634,7 +638,7 @@ async function estimateVariableCosts(
   const fallbackBankId = bankAccounts[0].id
 
   const horizonDays = 60
-  const days = Array.from({ length: horizonDays }, (_, i) => addDays(todayStr, i + 1))
+  const days = Array.from({ length: horizonDays }, (_, i) => addDaysJST(todayStr, i + 1))
   const perDayBase = Math.ceil(monthlyAverage / 30)
 
   return days.flatMap(date => {
@@ -761,9 +765,76 @@ async function calculateCardCharges(
 
 ```text
 未設定カードの扱い:
-- サーバー側: 該当カードをスキップし、警告ログを記録
+- サーバー側: 該当カードの引き落とし額は計算不可だが、推定支出を生成する
+- stale_sources に card_schedule_missing:{name} を追加（既存）
+- status は WARNING に留まる（SETUP_REQUIRED にはしない）
 - クライアント側: 「このカードは締め日/引き落とし日の設定が必要です」を表示
 - 設定完了後に即時再計算
+```
+
+```typescript
+// DT-220: Estimate spending for unlinked/unscheduled cards.
+// Design Principle #3: 空振りOK、見逃しNG — include estimated spend for safety.
+// Cards without closing_day/billing_day can't produce committed charges,
+// but we still have their transaction history. Use average of last 3 months
+// as a variable_cost-like estimate so the projection doesn't silently ignore them.
+async function estimateUnlinkedCardSpend(
+  userId: string,
+  unlinkedCards: FinancialAccount[],
+  bankAccounts: FinancialAccount[],
+): Promise<TimelineEvent[]> {
+  if (unlinkedCards.length === 0) return []
+
+  const threeMonthsAgo = new Date()
+  threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3)
+  const fallbackBankId = bankAccounts[0]?.id
+
+  const events: TimelineEvent[] = []
+
+  for (const card of unlinkedCards) {
+    const txResult = await supabase
+      .from('transactions')
+      .select('amount, transacted_at')
+      .eq('user_id', userId)
+      .eq('account_id', card.id)
+      .lt('amount', 0)
+      .gte('transacted_at', threeMonthsAgo.toISOString())
+
+    const txData = txResult.data ?? []
+    if (txData.length === 0) continue
+
+    // Calculate monthly average spend
+    const totalSpend = txData.reduce((sum, t) => sum + Math.abs(t.amount), 0)
+    const monthSpan = Math.max(1, Math.ceil(
+      (Date.now() - threeMonthsAgo.getTime()) / (30 * 24 * 3600_000)
+    ))
+    const monthlyAvg = Math.ceil(totalSpend / monthSpan)
+
+    // Route to settlement bank if known, otherwise to primary bank
+    const targetBankId = card.settlement_account_id ?? fallbackBankId
+    if (!targetBankId) continue
+
+    // Spread as daily estimated spend over the next 30 days
+    const perDay = Math.ceil(monthlyAvg / 30)
+    const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Tokyo' })
+
+    for (let i = 1; i <= 30; i++) {
+      const date = addDays(todayStr, i)
+      events.push({
+        id: `estimated_card_spend:${card.id}:${date}`,
+        date,
+        type: 'estimated_card_spend',
+        account_id: card.id,
+        bank_account_id: targetBankId,
+        description: `${card.name} 推定支出 (過去3ヶ月平均)`,
+        amount: -perDay,
+        running_balance: 0,  // filled by buildTimeline
+      })
+    }
+  }
+
+  return events
+}
 ```
 
 ### 引き落とし日ごとの資金充足判定 (カード別)
@@ -1107,19 +1178,19 @@ let subscription = supabase
 これは予測エンジンの既存出力からの派生メトリクスであり、新しい計算は行わない。
 
 ```
-自由残額 = 給料日前日の予測残高 (pre_payday_balance)
+自由残額 = 次の収入予定前日の予測残高 (pre_income_balance)
 
 つまり:
   現在の銀行残高 (Layer 1: truth anchor)
-  + 給料日までの見込み収入 (Layer 3)
-  - 給料日までの確定引き落とし (Layer 2: committed charges)
-  - 給料日までの固定費 (Layer 3: subscriptions, fixed costs)
+  + 次の収入予定までの見込み収入 (Layer 3)
+  - 次の収入予定までの確定引き落とし (Layer 2: committed charges)
+  - 次の収入予定までの固定費 (Layer 3: subscriptions, fixed costs)
   - 見込み変動費 (Layer 3: 過去3ヶ月平均)
-  = 給料日時点で手元に残る見込み額
+  = 次の収入予定時点で手元に残る見込み額
 ```
 
 **日割りにしない理由は変わらない。** 「1日¥2,000まで」は非現実的だが、
-「給料日まで¥38,200の余裕がある」は行動可能な事実。
+「次の収入予定まで¥38,200の余裕がある」は行動可能な事実。
 
 **Design Principle #3 との関係:**
 - 見込み変動費は過去3ヶ月平均を使う（楽観しない）
@@ -1130,15 +1201,15 @@ let subscription = supabase
 
 ```typescript
 interface ProjectionSummary {
-  // 自由残額 (ヒーロー数値): 給料日前日の予測残高
-  // 給料日未設定の場合は min_projected_balance にフォールバック
+  // 自由残額 (ヒーロー数値): 次の収入予定前日の予測残高
+  // 収入予定未設定の場合は min_projected_balance にフォールバック
   spendable_balance: number
 
   // 補助メトリクス
-  min_projected_balance: number     // 期間中の最低残高
-  min_projected_date: string        // その最低残高になる日付
-  next_payday: string | null        // 次の給料日 (projected_incomes から)
-  pre_payday_balance: number | null // 給料日前日の予測残高 (null = 給料日未設定)
+  min_projected_balance: number          // 期間中の最低残高
+  min_projected_date: string             // その最低残高になる日付
+  next_income_date: string | null        // 次の収入予定 (projected_incomes から)
+  pre_income_balance: number | null      // 次の収入予定前日の予測残高 (null = 収入予定未設定)
 
   // staleness (Design Principle #2)
   data_as_of: string                // 最新の upstream data timestamp
@@ -1148,34 +1219,34 @@ interface ProjectionSummary {
 
 function computeProjectionSummary(projection: Projection): ProjectionSummary {
   const minBar = projection.aggregate_balance_bars.reduce(
-    (min, bar) => bar.balance < min.balance ? bar : min,
+    (min, bar) => bar.end_balance < min.end_balance ? bar : min,
     projection.aggregate_balance_bars[0]
   )
 
-  // Next payday from projected_incomes (is_estimated=false, amount >= 30_000)
-  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Tokyo' })
-  const nextPayday = projection.aggregate_timeline.find(
-    e => e.type === 'income' && e.date > today && e.amount >= 30_000
+  // Next income event from aggregate_timeline
+  const today = todayJST()
+  const nextIncome = projection.aggregate_timeline.find(
+    e => e.type === 'income' && e.date > today
   )
 
-  // Pre-payday balance: balance bar for the day before payday
-  let prePaydayBalance: number | null = null
-  if (nextPayday) {
-    const dayBefore = addDays(nextPayday.date, -1)
+  // Pre-income balance: balance bar for the day before next income
+  let preIncomeBalance: number | null = null
+  if (nextIncome) {
+    const dayBefore = addDaysJST(nextIncome.date, -1)
     const bar = projection.aggregate_balance_bars.find(b => b.date === dayBefore)
-    prePaydayBalance = bar?.balance ?? minBar.balance
+    preIncomeBalance = bar?.end_balance ?? minBar.end_balance
   }
 
-  // Spendable balance: pre-payday if available, otherwise min projected
+  // Spendable balance: pre-income if available, otherwise min projected
   // Using min as fallback is conservative (Design Principle #3)
-  const spendableBalance = prePaydayBalance ?? minBar.balance
+  const spendableBalance = preIncomeBalance ?? minBar.end_balance
 
   return {
     spendable_balance: spendableBalance,
-    min_projected_balance: minBar.balance,
+    min_projected_balance: minBar.end_balance,
     min_projected_date: minBar.date,
-    next_payday: nextPayday?.date ?? null,
-    pre_payday_balance: prePaydayBalance,
+    next_income_date: nextIncome?.date ?? null,
+    pre_income_balance: preIncomeBalance,
     data_as_of: projection.data_as_of,
     is_stale: projection.is_stale,
     stale_sources: projection.stale_sources,
@@ -1193,8 +1264,8 @@ function computeProjectionSummary(projection: Projection): ProjectionSummary {
 │  あと自由に使える                          │
 │  ¥38,200                    ← ヒーロー数値 │
 │                                           │
-│  次の給料日  3/25 (火)                      │
-│  最低残高    ¥12,400 (3/15 引き落とし後)      │
+│  次の収入予定  3/25 (火)                     │
+│  最低残高      ¥12,400 (3/15 引き落とし後)    │
 │  ───────────────────────                  │
 │  SAFE  口座残高は足りる見込みです              │
 └─────────────────────────────────────────┘
@@ -1204,8 +1275,8 @@ function computeProjectionSummary(projection: Projection): ProjectionSummary {
 │  あと自由に使える                          │
 │  ¥2,100                     ← 黄色       │
 │                                           │
-│  次の給料日  3/25 (火)                      │
-│  最低残高    ¥-3,200 (3/15 引き落とし後)     │
+│  次の収入予定  3/25 (火)                     │
+│  最低残高      ¥-3,200 (3/15 引き落とし後)   │
 │  ───────────────────────                  │
 │  ⚠ WARNING  3/15の引き落としで不足の可能性    │
 └─────────────────────────────────────────┘
@@ -1215,20 +1286,20 @@ function computeProjectionSummary(projection: Projection): ProjectionSummary {
 │  あと自由に使える                          │
 │  ¥-8,400                    ← 赤         │
 │                                           │
-│  次の給料日  3/25 (火)                      │
+│  次の収入予定  3/25 (火)                     │
 │  最低残高    ¥-8,400 (3/10 引き落とし後)     │
 │  ───────────────────────                  │
 │  🔴 CRITICAL  残高不足が見込まれます         │
 │  入金が必要です                             │
 └─────────────────────────────────────────┘
 
-■ 給料日未設定:
+■ 収入予定未設定:
 ┌─────────────────────────────────────────┐
 │  最低予測残高                               │
 │  ¥12,400                    ← ヒーロー数値 │
 │  (3/15 引き落とし後)                        │
 │  ───────────────────────                  │
-│  給料日を設定するとより正確な予測ができます      │
+│  収入予定を設定するとより正確な予測ができます     │
 └─────────────────────────────────────────┘
 
 ■ データ古い (is_stale = true):

@@ -146,7 +146,8 @@
             "income",
             "card_charge",
             "fixed_cost",
-            "variable_cost"
+            "variable_cost",
+            "estimated_card_spend"
           ]
         },
         "account_id": {
@@ -362,7 +363,7 @@
         "funded_charges",
         "unfunded_charges",
         "min_projected_balance",
-        "pre_payday_balance"
+        "pre_income_balance"
       ],
       "properties": {
         "safety_status": {
@@ -396,11 +397,12 @@
         "min_projected_balance": {
           "type": "number"
         },
-        "pre_payday_balance": {
+        "pre_income_balance": {
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "Projected balance the day before the next income event. Null if no income is scheduled."
         }
       }
     }
@@ -527,7 +529,7 @@
         "funded_charges": 0,
         "unfunded_charges": 1,
         "min_projected_balance": -7200,
-        "pre_payday_balance": -7200
+        "pre_income_balance": -7200
       }
     }
   ]
