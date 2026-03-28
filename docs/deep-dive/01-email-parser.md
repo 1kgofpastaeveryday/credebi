@@ -174,6 +174,26 @@ Subject: [My Starbucks] スターバックス カード オンライン入金完
 → 紐付けロジックで活用
 ```
 
+### §2a. MIME Structure Handling (DT-082)
+
+カード発行元メールの一般的な MIME 構造に対応する。
+
+#### 対応パターン
+
+| MIME type | 処理 |
+|-----------|------|
+| text/plain (単体) | そのままパース |
+| multipart/alternative | text/plain を優先。text/plain がなければ text/html から strip tags |
+| multipart/mixed | 本文パート (text/plain or text/html) のみ処理。添付ファイルは無視 |
+| multipart/related | text/html 本文を抽出、inline 画像は無視 |
+| S/MIME (application/pkcs7-mime) | 署名検証せず、content が plaintext 抽出可能なら処理。不可なら parse_failures に記録 |
+
+#### 実装方針
+- Deno の標準ライブラリまたは npm:emailjs-mime-parser でパース
+- Content-Transfer-Encoding: base64, quoted-printable に対応
+- charset: UTF-8, ISO-2022-JP, Shift_JIS に対応 (DT-004 の JIS X 0201 対応済み)
+- ネストが3階層以上の multipart は最上位の text パートのみ使用
+
 ---
 
 ## 3. パーサー実装 (実メールベース)
@@ -289,6 +309,18 @@ class SMBCParser implements EmailParser {
   }
 }
 ```
+
+### §3a-2. SMBC カード紐付け曖昧性 (DT-067)
+
+SMBC NL メールにはカード下4桁 (card_last4) が含まれない。
+
+Handling:
+1. parsed_card_last4 = NULL で parsed_emails に保存
+2. ユーザーが SMBC カードを1枚だけ登録済み → 自動紐付け (account_id = その1枚)
+3. 複数枚登録済み → account_id = NULL + Push通知:
+   "SMBCカードの利用通知がありました。どのカードか選択してください"
+   → タップでカード選択画面へ
+4. 0枚 → account_id = NULL (DT-083 の汎用フローに委譲)
 
 ### 3c. ライフカード パーサー
 
@@ -703,6 +735,78 @@ class StarbucksParser implements EmailParser {
   }
 }
 ```
+
+### §3d. Merchant Name Normalization (DT-053)
+
+全ての加盟店名照合の前に以下の正規化を適用する:
+
+```typescript
+function normalizeMerchant(raw: string): string {
+  return raw
+    .normalize('NFKC')          // 全角→半角、合字分解
+    .toLowerCase()               // 大文字→小文字
+    .trim()                      // 前後空白除去
+    .replace(/\s+/g, ' ')       // 連続空白を1つに
+    .replace(/[.\-\/\*]/g, '')  // 記号除去
+}
+```
+
+適用箇所:
+- known_subscription_services のパターン定義側にも同一正規化を適用
+- parsed_merchant 保存時 (元の raw_merchant は別途保持)
+- サブスク検知の matchKnownSubscription() 呼び出し前
+
+例:
+  "ＮＥＴＦＬＩＸ．ＣＯＭ" → "netflixcom"
+  "Netflix.com"           → "netflixcom"
+  "NETFLIX"               → "netflix"
+
+カタカナ↔ローマ字変換は Phase 2 で実メールフィクスチャの検証後に判断。
+現時点では正規化 + 完全一致で十分なカバレッジが得られる。
+
+### §3e. Foreign Currency Parsing (DT-068)
+
+金額パースを parseInt → parseFloat に変更し、外貨取引に対応する。
+
+```typescript
+function parseAmount(raw: string, currencyHint?: string): { amount: number; currency: string } {
+  const cleaned = raw.replace(/[,\s]/g, '')
+  const value = parseFloat(cleaned)
+  if (isNaN(value) || value <= 0) throw new Error(`Invalid amount: ${raw}`)
+
+  // 通貨判定
+  const currency = currencyHint ?? 'JPY'
+
+  // JPY の場合は整数に丸める (銭は存在しない)
+  const amount = currency === 'JPY' ? Math.round(value) : Math.round(value * 100) / 100
+
+  return { amount, currency }
+}
+```
+
+- 通貨コードはメール本文中の "$", "USD", "EUR" 等から推定
+- 円換算は行わない (為替レートは変動するため、元通貨のまま保存)
+- transactions テーブルの currency カラムに保存
+- projection 計算では JPY 以外の取引は除外 (Phase 2 で為替対応)
+
+### §3f. card_last4 不一致時の汎用フロー (DT-083)
+
+parsed_card_last4 が financial_accounts のどのカードにもマッチしない場合の処理。
+
+Flow:
+1. transactions に account_id = NULL で保存 (取引自体は失わない — Design Principle #1)
+2. Push 通知: "新しいカード (下4桁: {last4}) の利用が検知されました。タップしてカードを登録"
+   - notification_level: 'medium' 以上で配信
+   - deep link: credebi://financial_accounts/new?last4={last4}
+3. ユーザーがカード登録 → 既存の account_id = NULL 取引を一括紐付け:
+   UPDATE transactions SET account_id = $new_account_id
+   WHERE user_id = $uid AND parsed_card_last4 = $last4 AND account_id IS NULL
+4. 通知は同一 last4 につき 1回/7日 に制限 (DT-070 の通知過多防止と整合)
+
+Projection への影響:
+- account_id = NULL の取引は aggregate projection にのみ含まれる
+- per-account projection からは除外 (どの口座から引き落とされるか不明)
+- Design Principle #3: 支出としては計上する (見逃しNG)
 
 ---
 
@@ -1130,6 +1234,19 @@ ALTER TABLE transactions ADD COLUMN metadata JSONB DEFAULT '{}';
 → 当面は案3 (手動入力) で対応。
   セゾンゴールドは年1回利用で年会費無料なので利用頻度は低いはず。
 ```
+
+### §5a. LLM Category String → UUID Resolution (DT-063)
+
+LLM が返す suggested_category 文字列を categories テーブルの name で照合する。
+
+Resolution flow:
+1. SELECT id FROM categories WHERE lower(name) = lower(suggested_category) AND (user_id = $uid OR user_id IS NULL)
+2. ユーザー定義カテゴリを優先 (user_id = $uid がシステムカテゴリより優先)
+3. 一致なし → category_id = NULL (未分類として保存)
+4. parse_failures に記録: { reason: 'category_not_found', suggested: suggested_category }
+
+ユーザーは後からトランザクション詳細画面で手動カテゴリ設定が可能。
+LLM 表記揺れ (例: "食費" vs "食料品") は Phase 2 で類義語マッピング追加。
 
 ---
 

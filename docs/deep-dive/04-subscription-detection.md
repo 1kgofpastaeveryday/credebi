@@ -189,6 +189,9 @@ async function detectSubscriptionPattern(
   // known_DB matches also require user confirmation to prevent false positive
   // pollution of fixed_costs. A merchant name matching "NETFLIX" doesn't guarantee
   // the charge is a subscription (could be gift card purchase, refund adjustment, etc.)
+  // DT-053: normalizeMerchant() must be applied to BOTH the input merchant name
+  // AND the pattern strings in KNOWN_SUBSCRIPTIONS before comparison.
+  // See 01-email-parser.md §3d for the normalization function.
   const knownMatch = matchKnownSubscription(merchant, amount)
   if (knownMatch) {
     const subscription = await createOrUpdateSubscription(userId, {
@@ -431,6 +434,7 @@ async function detectSubscriptionsAfterBootstrap(userId: string): Promise<void> 
     if (!merchant) continue
 
     // Known DB match
+    // DT-053: normalizeMerchant() applied to merchant before comparison (see 01-email-parser.md §3d)
     const amount = Math.abs(txs[0].amount)
     const knownMatch = matchKnownSubscription(merchant, amount)
     if (knownMatch) {
